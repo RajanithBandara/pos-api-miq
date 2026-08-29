@@ -1,0 +1,38 @@
+## Visual Studio & .NET Core
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+*.userprefs
+*.dbmdl
+*.jfm
+*.pfx
+*.publishsettings
+*.DotSettings.user
+
+## Build Results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+publish/
+
+## IDE Files
+.vs/
+.vscode/
+.idea/
+*.swp
+*.lock
+*.ncrunch*
+*.rider*
+
+## OS generated
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+## Secrets & Config Overrides
+appsettings.Production.json
+appsettings.*.local.json
+secrets.json
+*.env
