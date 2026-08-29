@@ -5,14 +5,11 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using POS.Api.Extensions;
 using POS.Api.Middleware;
 using POS.Application;
-using POS.Application.Common.Interfaces;
 using POS.Infrastructure;
 using POS.Infrastructure.Persistence;
-using POS.Infrastructure.Persistence.Seed;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -31,10 +28,6 @@ builder.Host.UseSerilog();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
-// Add Auth & Security
-builder.Services.AddJwtAuthentication(builder.Configuration);
-builder.Services.AddPermissionAuthorization();
-
 // Add Controllers with JSON configuration
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -46,12 +39,12 @@ builder.Services.AddControllers()
 
 // Health Checks
 builder.Services.AddHealthChecks()
-    .AddDbContextCheck<AppDbContext>("database", tags: new[] { "ready" });
+    .AddDbContextCheck<AppDbContext>("database", tags: new[] { "ready", "db" });
 
 // Swagger / OpenAPI
 builder.Services.AddSwaggerDocumentation();
 
-// Configurable CORS for Next.js management web frontend
+// Configurable CORS
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
     ?? new[] { "http://localhost:3000" };
 
@@ -68,27 +61,6 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Seed database on startup if configured
-using (var scope = app.Services.CreateScope())
-{
-    var services = scope.ServiceProvider;
-    var logger = services.GetRequiredService<ILogger<Program>>();
-    var context = services.GetService<AppDbContext>();
-    var passwordHasher = services.GetService<IPasswordHasher>();
-
-    if (context != null && passwordHasher != null)
-    {
-        try
-        {
-            await DatabaseSeeder.SeedAsync(context, passwordHasher, logger);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Database seeding skipped or encountered an issue on startup.");
-        }
-    }
-}
-
 // HTTP Middleware Pipeline
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
@@ -102,7 +74,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI(c =>
     {
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "POS API v1");
-        c.RoutePrefix = string.Empty; // Serve Swagger at root in development
+        c.RoutePrefix = string.Empty; // Serve Swagger UI at root in development
     });
 }
 else
@@ -115,11 +87,9 @@ app.UseRouting();
 
 app.UseCors("PosWebClientPolicy");
 
-app.UseAuthentication();
-app.UseAuthorization();
-
 app.MapControllers();
 app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live");
 
 try
 {

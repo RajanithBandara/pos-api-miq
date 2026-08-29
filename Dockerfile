@@ -8,8 +8,6 @@ COPY src/POS.Domain/POS.Domain.csproj src/POS.Domain/
 COPY src/POS.Application/POS.Application.csproj src/POS.Application/
 COPY src/POS.Infrastructure/POS.Infrastructure.csproj src/POS.Infrastructure/
 COPY src/POS.Api/POS.Api.csproj src/POS.Api/
-COPY tests/POS.UnitTests/POS.UnitTests.csproj tests/POS.UnitTests/
-COPY tests/POS.ApplicationTests/POS.ApplicationTests.csproj tests/POS.ApplicationTests/
 COPY tests/POS.IntegrationTests/POS.IntegrationTests.csproj tests/POS.IntegrationTests/
 
 # Restore dependencies

@@ -1,16 +1,12 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
-using FluentValidation;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using POS.Domain.Exceptions;
 using Serilog.Context;
 
 namespace POS.Api.Middleware;
@@ -122,92 +118,15 @@ public class ExceptionHandlingMiddleware
         var problemDetails = new ProblemDetails
         {
             Instance = context.Request.Path,
-            Extensions = { ["traceId"] = Activity.Current?.Id ?? context.TraceIdentifier }
+            Extensions = { ["traceId"] = Activity.Current?.Id ?? context.TraceIdentifier },
+            Status = (int)HttpStatusCode.InternalServerError,
+            Title = "Internal Server Error",
+            Detail = _env.IsDevelopment() ? exception.ToString() : "An unexpected internal server error occurred.",
+            Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.6.1"
         };
 
-        switch (exception)
-        {
-            case ValidationException valEx:
-                problemDetails.Status = (int)HttpStatusCode.BadRequest;
-                problemDetails.Title = "Validation Error";
-                problemDetails.Detail = "One or more validation rules were violated.";
-                problemDetails.Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.5.1";
-                problemDetails.Extensions["errors"] = valEx.Errors
-                    .GroupBy(e => e.PropertyName)
-                    .ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray());
-                break;
-
-            case ValidationDomainException valDomEx:
-                problemDetails.Status = (int)HttpStatusCode.BadRequest;
-                problemDetails.Title = "Domain Validation Error";
-                problemDetails.Detail = valDomEx.Message;
-                problemDetails.Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.5.1";
-                problemDetails.Extensions["errors"] = valDomEx.Errors;
-                break;
-
-            case EntityNotFoundException notFoundEx:
-                problemDetails.Status = (int)HttpStatusCode.NotFound;
-                problemDetails.Title = "Entity Not Found";
-                problemDetails.Detail = notFoundEx.Message;
-                problemDetails.Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.5.4";
-                problemDetails.Extensions["entity"] = notFoundEx.EntityName;
-                problemDetails.Extensions["key"] = notFoundEx.EntityKey?.ToString();
-                break;
-
-            case InsufficientStockException stockEx:
-                problemDetails.Status = (int)HttpStatusCode.BadRequest;
-                problemDetails.Title = "Insufficient Stock";
-                problemDetails.Detail = stockEx.Message;
-                problemDetails.Type = "https://pos-api.internal/errors/insufficient-stock";
-                problemDetails.Extensions["productId"] = stockEx.ProductId;
-                problemDetails.Extensions["requested"] = stockEx.RequestedQuantity;
-                problemDetails.Extensions["available"] = stockEx.AvailableQuantity;
-                break;
-
-            case DuplicateEntityException dupEx:
-                problemDetails.Status = (int)HttpStatusCode.Conflict;
-                problemDetails.Title = "Duplicate Entity";
-                problemDetails.Detail = dupEx.Message;
-                problemDetails.Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.5.8";
-                break;
-
-            case SyncConflictException conflictEx:
-                problemDetails.Status = (int)HttpStatusCode.Conflict;
-                problemDetails.Title = "Synchronization Conflict";
-                problemDetails.Detail = conflictEx.Message;
-                problemDetails.Type = "https://pos-api.internal/errors/sync-conflict";
-                problemDetails.Extensions["entityType"] = conflictEx.EntityType;
-                problemDetails.Extensions["entityId"] = conflictEx.EntityId;
-                problemDetails.Extensions["serverVersion"] = conflictEx.ServerVersion;
-                problemDetails.Extensions["clientVersion"] = conflictEx.ClientVersion;
-                break;
-
-            case UnauthorizedDomainException unauthEx:
-                problemDetails.Status = (int)HttpStatusCode.Forbidden;
-                problemDetails.Title = "Forbidden";
-                problemDetails.Detail = unauthEx.Message;
-                problemDetails.Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.5.3";
-                break;
-
-            case DomainException domEx:
-                problemDetails.Status = (int)HttpStatusCode.BadRequest;
-                problemDetails.Title = "Domain Rule Violation";
-                problemDetails.Detail = domEx.Message;
-                problemDetails.Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.5.1";
-                if (!string.IsNullOrEmpty(domEx.ErrorCode))
-                    problemDetails.Extensions["errorCode"] = domEx.ErrorCode;
-                break;
-
-            default:
-                problemDetails.Status = (int)HttpStatusCode.InternalServerError;
-                problemDetails.Title = "Internal Server Error";
-                problemDetails.Detail = _env.IsDevelopment() ? exception.ToString() : "An unexpected internal error occurred.";
-                problemDetails.Type = "https://datatracker.ietf.org/doc/html/rfc7231#section-6.6.1";
-                break;
-        }
-
         context.Response.ContentType = "application/problem+json";
-        context.Response.StatusCode = problemDetails.Status ?? (int)HttpStatusCode.InternalServerError;
+        context.Response.StatusCode = problemDetails.Status.Value;
 
         return context.Response.WriteAsync(JsonSerializer.Serialize(problemDetails, JsonOpts));
     }
