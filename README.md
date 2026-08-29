@@ -111,33 +111,34 @@ POS-API/
 
 ---
 
-## 3. Configuring Neon PostgreSQL
+## 3. Configuring Neon PostgreSQL & Secrets
 
-1. Log into your [Neon Console](https://console.neon.tech) and create a new PostgreSQL project.
-2. Copy your connection string from the Neon dashboard (ensure `sslmode=require` is present).
-3. Set the connection string in your local `appsettings.Development.json` or as an environment variable:
+### A. Local Development Environment (.NET User Secrets)
+For local development, sensitive values (such as database credentials and JWT keys) are kept out of `appsettings.json` and source control by using **.NET User Secrets** (`UserSecretsId: 76152c01-ee6c-478e-a9a1-a900cd04a277`):
 
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Host=ep-xyz-123456.us-east-2.aws.neon.tech;Database=neondb;Username=your_username;Password=your_password;SSL Mode=Require;Trust Server Certificate=true"
-  }
-}
+```bash
+# 1. Set your Neon PostgreSQL connection string in User Secrets
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "postgresql://user:pass@ep-xyz.aws.neon.tech/pos_db?sslmode=require" --project src/POS.Api
+
+# 2. (Optional) Set custom local JWT secret
+dotnet user-secrets set "Jwt:SecretKey" "DEVELOPMENT_MODE_SUPER_SECRET_KEY_FOR_LOCAL_TESTING_ONLY_32_BYTES" --project src/POS.Api
+
+# 3. Verify configured local secrets
+dotnet user-secrets list --project src/POS.Api
 ```
 
----
+### B. Azure Cloud Environment (Environment Variables / App Settings)
+When deploying to **Azure App Service**, **Azure Container Apps**, or **Azure Kubernetes Service (AKS)**, configure the settings via Azure Portal / ARM / Bicep / Terraform under **Configuration > Application settings** or Environment Variables:
 
-## 4. Environment Variables
-
-| Variable | Description | Example / Default |
+| Azure Configuration Key | Linux / Docker Env Variable Format | Description |
 | :--- | :--- | :--- |
-| `ConnectionStrings__DefaultConnection` | Neon PostgreSQL connection string | `Host=...;Database=...;Username=...;Password=...;SSL Mode=Require` |
-| `Jwt__SecretKey` | HMAC-SHA256 signing secret (min 32 bytes) | `SUPER_SECRET_KEY_MINIMUM_32_CHARACTERS` |
-| `Jwt__Issuer` | JWT Token Issuer | `POS-API` |
-| `Jwt__Audience` | JWT Token Audience | `POS-Clients` |
-| `Jwt__ExpiryMinutes` | Access token lifespan | `120` |
-| `Cors__AllowedOrigins__0` | Next.js Dashboard allowed origin | `http://localhost:3000` |
-| `ASPNETCORE_ENVIRONMENT` | Environment name | `Production` or `Development` |
+| `ConnectionStrings:DefaultConnection` | `ConnectionStrings__DefaultConnection` | Neon PostgreSQL pooled connection string (`sslmode=require`) |
+| `Jwt:SecretKey` | `Jwt__SecretKey` | Production HMAC-SHA256 signing secret (min 32 bytes) |
+| `Jwt:Issuer` | `Jwt__Issuer` | JWT Token Issuer (e.g. `POS-API`) |
+| `Jwt:Audience` | `Jwt__Audience` | JWT Token Audience (e.g. `POS-Clients`) |
+| `Jwt:ExpiryMinutes` | `Jwt__ExpiryMinutes` | Access token lifespan in minutes (default `120`) |
+| `Cors:AllowedOrigins:0` | `Cors__AllowedOrigins__0` | Next.js Dashboard domain (e.g. `https://pos-web.azurewebsites.net`) |
+| `ASPNETCORE_ENVIRONMENT` | `ASPNETCORE_ENVIRONMENT` | Set to `Production` |
 
 ---
 

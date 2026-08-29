@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
     <ProjectReference Include="..\POS.Application\POS.Application.csproj" />
@@ -23,6 +23,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>76152c01-ee6c-478e-a9a1-a900cd04a277</UserSecretsId>
   </PropertyGroup>
 
 </Project>
