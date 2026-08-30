@@ -138,7 +138,60 @@ When deploying to **Azure App Service**, **Azure Container Apps**, or **Azure Ku
 | `Jwt:Audience` | `Jwt__Audience` | JWT Token Audience (e.g. `POS-Clients`) |
 | `Jwt:ExpiryMinutes` | `Jwt__ExpiryMinutes` | Access token lifespan in minutes (default `120`) |
 | `Cors:AllowedOrigins:0` | `Cors__AllowedOrigins__0` | Next.js Dashboard domain (e.g. `https://pos-web.azurewebsites.net`) |
+| `Provisioning:ApiKey` | `Provisioning__ApiKey` | **Required.** Bootstrap key for `/api/provisioning`. Unset means those endpoints return 503 rather than running unguarded |
 | `ASPNETCORE_ENVIRONMENT` | `ASPNETCORE_ENVIRONMENT` | Set to `Production` |
+
+The API refuses to start when `Jwt:SecretKey` is missing, shorter than 32 bytes, or still the
+placeholder outside Development. A deployment without a signing key would otherwise boot
+normally and reject every sync call as unauthorized, which is a far harder failure to trace.
+
+**Connection string format.** Either shape works. Neon's console hands out a URI
+(`postgresql://user:pass@host/db?sslmode=require`); Npgsql itself only understands the
+key-value form (`Host=…;Database=…;Username=…;Password=…;SSL Mode=Require`). A URI is
+converted automatically at startup — see `PostgresConnectionString`.
+
+---
+
+## 3b. Terminal Enrollment
+
+Tills authenticate with two credentials, deliberately separated. Enrollment happens once per
+installation; token exchange happens whenever the till needs a fresh bearer token.
+
+```
+  installer                      till                          API
+     │                            │                             │
+     │  reads code off dashboard  │                             │
+     ├───────────────────────────►│  POST /api/terminals/enroll │
+     │                            ├────────────────────────────►│  single-use code
+     │                            │◄────────────────────────────┤  + terminalUid
+     │                            │   apiKey (shown once)       │
+     │                            │                             │
+     │                            │  POST /api/terminals/token  │
+     │                            ├────────────────────────────►│  apiKey
+     │                            │◄────────────────────────────┤
+     │                            │   bearer token (~2h)        │
+     │                            │                             │
+     │                            │  every sync call carries the token
+```
+
+| Endpoint | Auth | Purpose |
+| :--- | :--- | :--- |
+| `POST /api/provisioning/stores` | `X-Provisioning-Key` | Create a store |
+| `GET /api/provisioning/stores` | `X-Provisioning-Key` | List stores |
+| `POST /api/provisioning/stores/{id}/enrollment-codes` | `X-Provisioning-Key` | Mint a single-use code (default 60 min) |
+| `GET /api/provisioning/terminals` | `X-Provisioning-Key` | List terminals across stores |
+| `POST /api/provisioning/terminals/{id}/{suspend\|reactivate\|revoke}` | `X-Provisioning-Key` | Change terminal status |
+| `POST /api/terminals/enroll` | none | Bind a till to a store; returns the device secret **once** |
+| `POST /api/terminals/token` | none | Exchange the device secret for a bearer token |
+| `GET /api/terminals/me` | Bearer | The calling terminal's own record |
+
+Notes that matter operationally:
+
+- The device secret is stored only as a BCrypt hash. A lost secret needs a new enrollment code — it cannot be read back.
+- Re-enrolling the **same** `terminalUid` into the **same** store rotates the secret and keeps the terminal's identity and history. That is the reinstall path.
+- Re-enrolling into a **different** store is refused: events the till has not yet sent belong to the store it was enrolled to.
+- `revoke` is permanent and clears the credential; `suspend` keeps it, so `reactivate` restores access without re-enrolling.
+- Enrollment and token failures answer identically regardless of cause, so neither endpoint can be used to enumerate what exists. The specific reason goes to the log.
 
 ---
 
