@@ -6,6 +6,9 @@ namespace POS.IntegrationTests.Infrastructure;
 
 public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>Key the provisioning tests present. Only ever exists inside the test host.</summary>
+    public const string ProvisioningKey = "integration-test-provisioning-key";
+
     private readonly string _dbName = "POS_Integration_TestDb_" + Guid.NewGuid();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -16,6 +19,7 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
         builder.UseSetting("Jwt:SecretKey", "INTEGRATION_TEST_SUPER_SECRET_KEY_32_BYTES_LONG");
         builder.UseSetting("Jwt:Issuer", "POS-API-TEST");
         builder.UseSetting("Jwt:Audience", "POS-Clients-TEST");
+        builder.UseSetting("Provisioning:ApiKey", ProvisioningKey);
 
         builder.UseEnvironment("Testing");
     }

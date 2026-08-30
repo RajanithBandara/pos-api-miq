@@ -2,7 +2,11 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using POS.Application.Common.Interfaces;
+using POS.Domain.Interfaces;
+using POS.Infrastructure.Authentication;
 using POS.Infrastructure.Persistence;
+using POS.Infrastructure.Repositories;
 
 namespace POS.Infrastructure;
 
@@ -11,7 +15,13 @@ public static class DependencyInjection
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         var dbProvider = configuration["DatabaseProvider"] ?? "PostgreSQL";
-        var connectionString = configuration.GetConnectionString("DefaultConnection");
+        var rawConnectionString = configuration.GetConnectionString("DefaultConnection");
+
+        // Accepts either the provider's URI form or Npgsql's key-value form. See
+        // PostgresConnectionString for why both turn up in practice.
+        var connectionString = rawConnectionString == "InMemory"
+            ? rawConnectionString
+            : PostgresConnectionString.Normalise(rawConnectionString);
 
         // EF Core with PostgreSQL / Npgsql or InMemory for integration testing
         services.AddDbContext<AppDbContext>(options =>
@@ -37,6 +47,17 @@ public static class DependencyInjection
                 options.UseInMemoryDatabase("POS_Default_InMemory");
             }
         });
+
+        services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
+
+        services.AddScoped<IStoreRepository, StoreRepository>();
+        services.AddScoped<ITerminalRepository, TerminalRepository>();
+        services.AddScoped<IEnrollmentCodeRepository, EnrollmentCodeRepository>();
+        services.AddScoped<ISyncEventRepository, SyncEventRepository>();
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+        services.AddSingleton<ISecretHasher, BcryptSecretHasher>();
+        services.AddSingleton<ITerminalTokenService, JwtTerminalTokenService>();
 
         return services;
     }
