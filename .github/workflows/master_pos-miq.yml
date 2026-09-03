@@ -64,3 +64,9 @@ jobs:
           app-name: 'pos-miq'
           slot-name: 'Production'
           package: ./publish
+          # wwwroot still holds test assemblies from earlier whole-solution publishes.
+          # Four *.runtimeconfig.json files leave the Linux startup probe unable to
+          # pick an entry point, so it falls back to the placeholder page.
+          clean: true
+          startup-command: 'dotnet POS.Api.dll'
+          restart: true
