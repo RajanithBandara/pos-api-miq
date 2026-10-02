@@ -7,8 +7,13 @@
 
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
+    <!-- Ed25519 verification for Neon Auth tokens. .NET has no Ed25519 implementation and
+         Microsoft.IdentityModel has no EdDSA provider, so the signature check has nowhere
+         else to come from. See EdDsaSecurityKey. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.22.0" />
     <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.22.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.11" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />

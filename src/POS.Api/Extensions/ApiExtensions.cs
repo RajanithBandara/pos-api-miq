@@ -18,9 +18,11 @@ public static class SwaggerExtensions
                 Description =
                     "Central ASP.NET Core Web API for multi-store retail POS operations with Neon PostgreSQL " +
                     "connectivity and health checking.\n\n" +
-                    "Two credentials are in play. Tills enroll with a single-use code, receive a device secret, " +
+                    "Three credentials are in play. Tills enroll with a single-use code, receive a device secret, " +
                     "and exchange it at /api/terminals/token for the bearer token every sync call carries. " +
-                    "Provisioning endpoints instead take the out-of-band X-Provisioning-Key header.",
+                    "The Angular dashboard presents a Neon Auth token, verified against Neon published keys and " +
+                    "then matched to a grant held in this API. Provisioning endpoints take the out-of-band " +
+                    "X-Provisioning-Key header.",
                 Contact = new OpenApiContact
                 {
                     Name = "POS Development Team"
@@ -37,6 +39,19 @@ public static class SwaggerExtensions
                 Description = "Terminal token from POST /api/terminals/token. Enter the token only, without the \"Bearer \" prefix."
             });
 
+            options.AddSecurityDefinition("NeonAuth", new OpenApiSecurityScheme
+            {
+                Name = "Authorization",
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                BearerFormat = "JWT",
+                In = ParameterLocation.Header,
+                Description =
+                    "Neon Auth access token for the dashboard and admin endpoints, taken from " +
+                    "session.access_token in the Angular app. Enter the token only, without the " +
+                    "\"Bearer \" prefix."
+            });
+
             options.AddSecurityDefinition("ProvisioningKey", new OpenApiSecurityScheme
             {
                 Name = RequireProvisioningKeyAttribute.HeaderName,
@@ -50,6 +65,7 @@ public static class SwaggerExtensions
             options.AddSecurityRequirement(document => new OpenApiSecurityRequirement
             {
                 { new OpenApiSecuritySchemeReference("Bearer", document), [] },
+                { new OpenApiSecuritySchemeReference("NeonAuth", document), [] },
                 { new OpenApiSecuritySchemeReference("ProvisioningKey", document), [] }
             });
         });

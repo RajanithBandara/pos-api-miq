@@ -22,6 +22,131 @@ namespace POS.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("POS.Domain.Entities.DashboardUser", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AuthSubject")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastSeenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Role")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("StoreId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuthSubject")
+                        .IsUnique();
+
+                    b.HasIndex("Email")
+                        .IsUnique();
+
+                    b.HasIndex("StoreId");
+
+                    b.ToTable("dashboard_users", (string)null);
+                });
+
+            modelBuilder.Entity("POS.Domain.Entities.ProductKey", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("AssignedStoreId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("KeyCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("MaxTerminals")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(3);
+
+                    b.Property<string>("PlanTier")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignedStoreId");
+
+                    b.HasIndex("KeyCode")
+                        .IsUnique();
+
+                    b.ToTable("product_keys", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("a0000000-0000-0000-0000-000000000001"),
+                            CreatedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            KeyCode = "MIQ-PRO-7K4D-92LX-AB83",
+                            MaxTerminals = 3,
+                            PlanTier = "PRO",
+                            Status = "Available"
+                        });
+                });
+
             modelBuilder.Entity("POS.Domain.Entities.Store", b =>
                 {
                     b.Property<Guid>("Id")
@@ -242,6 +367,26 @@ namespace POS.Infrastructure.Persistence.Migrations
                     b.HasIndex("StoreId");
 
                     b.ToTable("terminal_enrollment_codes", (string)null);
+                });
+
+            modelBuilder.Entity("POS.Domain.Entities.DashboardUser", b =>
+                {
+                    b.HasOne("POS.Domain.Entities.Store", "Store")
+                        .WithMany()
+                        .HasForeignKey("StoreId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Store");
+                });
+
+            modelBuilder.Entity("POS.Domain.Entities.ProductKey", b =>
+                {
+                    b.HasOne("POS.Domain.Entities.Store", "AssignedStore")
+                        .WithMany()
+                        .HasForeignKey("AssignedStoreId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("AssignedStore");
                 });
 
             modelBuilder.Entity("POS.Domain.Entities.SyncEvent", b =>

@@ -139,11 +139,15 @@ When deploying to **Azure App Service**, **Azure Container Apps**, or **Azure Ku
 | `Jwt:ExpiryMinutes` | `Jwt__ExpiryMinutes` | Access token lifespan in minutes (default `120`) |
 | `Cors:AllowedOrigins:0` | `Cors__AllowedOrigins__0` | Next.js Dashboard domain (e.g. `https://pos-web.azurewebsites.net`) |
 | `Provisioning:ApiKey` | `Provisioning__ApiKey` | **Required.** Bootstrap key for `/api/provisioning`. Unset means those endpoints return 503 rather than running unguarded |
+| `NeonAuth:BaseUrl` | `NeonAuth__BaseUrl` | Neon Auth URL for the project, e.g. `https://ep-xyz.aws.neon.tech/neondb/auth`. Issuer, audience and the JWKS address are all derived from it. Unset means `/api/dashboard/*` and `/api/admin/*` refuse every request |
+| `NeonAuth:ClockSkewSeconds` | `NeonAuth__ClockSkewSeconds` | Tolerance for clock drift against Neon, default `60`. Neon access tokens live 15 minutes, so keep this small |
 | `ASPNETCORE_ENVIRONMENT` | `ASPNETCORE_ENVIRONMENT` | Set to `Production` |
 
-The API refuses to start when `Jwt:SecretKey` is missing, shorter than 32 bytes, or still the
-placeholder outside Development. A deployment without a signing key would otherwise boot
-normally and reject every sync call as unauthorized, which is a far harder failure to trace.
+**`Jwt:SecretKey` is not optional in production.** When it is missing or shorter than 32 bytes the
+API falls back to a placeholder key that is committed to this repository, and terminal tokens
+signed with it can be forged by anyone who has read the source. The fallback exists so a
+developer can run the API without configuring anything; a deployment that relies on it is
+unauthenticated in practice.
 
 **Connection string format.** Either shape works. Neon's console hands out a URI
 (`postgresql://user:pass@host/db?sslmode=require`); Npgsql itself only understands the
@@ -192,6 +196,97 @@ Notes that matter operationally:
 - Re-enrolling into a **different** store is refused: events the till has not yet sent belong to the store it was enrolled to.
 - `revoke` is permanent and clears the credential; `suspend` keeps it, so `reactivate` restores access without re-enrolling.
 - Enrollment and token failures answer identically regardless of cause, so neither endpoint can be used to enumerate what exists. The specific reason goes to the log.
+
+---
+
+## 3c. Dashboard Authentication (Neon Auth)
+
+The Angular dashboard authenticates with **Neon Auth (Managed Better Auth)**; the WPF tills keep
+their own credentials, unchanged. The API runs both side by side as two ASP.NET Core
+authentication schemes, and the endpoint decides which one applies.
+
+```
+  WPF till                          Angular dashboard
+     │                                     │
+  enrollment code                    Neon Auth sign-in
+     │                                     │
+  device secret                      EdDSA JWT (15 min)
+     │                                     │
+  HS256 token (2 h)                        │
+     │                                     │
+     ▼                                     ▼
+  PosAuth scheme                     NeonAuth scheme
+  HS256, Jwt:SecretKey               EdDSA, verified against Neon's JWKS
+     │                                     │
+     ▼                                     ▼
+  TerminalOnly policy          WebPolicy / AdminPolicy
+  /api/sync/*                  /api/dashboard/*
+  /api/terminals/me            /api/admin/*
+```
+
+| Scheme | Algorithm | Issuer | Key |
+| :--- | :--- | :--- | :--- |
+| `PosAuth` (application default) | HS256 | `Jwt:Issuer` | shared secret this API holds |
+| `NeonAuth` | EdDSA (Ed25519) | origin of `NeonAuth:BaseUrl` | Neon's public JWKS |
+
+Every policy names the scheme allowed to satisfy it, so the separation is cryptographic rather
+than a claim check: a terminal token presented to `/api/dashboard/*` is handed to the Neon handler,
+which has no key that verifies it, and the request is refused as unauthenticated. The reverse holds
+identically.
+
+### How a dashboard user gets access
+
+**A valid Neon Auth token is not access.** Anyone can sign up to Neon Auth, so a token proves only
+who signed in. Access exists where this API holds a grant in its own `dashboard_users` table, and
+the role and store scope come from that row — never from the token. A verified token with no grant
+is answered **403**, not 200.
+
+Grants are issued to an email address before the person has ever signed in, because their Neon
+subject cannot be known in advance:
+
+```bash
+# 1. Bootstrap the first administrator with the out-of-band provisioning key.
+curl -X POST https://<api>/api/provisioning/dashboard-users \
+  -H "X-Provisioning-Key: $PROVISIONING_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"owner@example.com","displayName":"Owner","role":"Admin","storeId":null}'
+
+# 2. That person signs in to Neon Auth in the Angular app. On their first request the API binds
+#    their Neon subject to the grant, permanently.
+
+# 3. Thereafter, administrators manage access themselves.
+curl -X POST https://<api>/api/admin/dashboard-users \
+  -H "Authorization: Bearer <neon access token>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"manager@example.com","role":"Manager","storeId":"<store guid>"}'
+```
+
+The binding requires a **verified** address. Without that check, registering an unverified Neon
+account under an administrator's address would inherit their grant on first sign-in.
+
+| Endpoint | Auth | Purpose |
+| :--- | :--- | :--- |
+| `GET /api/dashboard/me` | Neon Auth | The caller's resolved identity, role and store scope |
+| `GET /api/dashboard/summary` | Neon Auth | Stores, terminals and sync activity within scope |
+| `GET /api/admin/dashboard-users` | Neon Auth + `Admin` | List grants |
+| `POST /api/admin/dashboard-users` | Neon Auth + `Admin` | Grant access to an address |
+| `POST /api/admin/dashboard-users/{id}/{activate\|deactivate}` | Neon Auth + `Admin` | Withdraw or restore access |
+| `POST /api/provisioning/dashboard-users` | `X-Provisioning-Key` | Bootstrap the first administrator |
+| `GET /api/provisioning/dashboard-users` | `X-Provisioning-Key` | List grants during bootstrap |
+
+Notes that matter operationally:
+
+- Roles are `Viewer`, `Manager`, `Admin`. `storeId` is the tenant boundary — `null` means every
+  store, and a scoped user's queries are filtered in the application layer, never by a request
+  parameter.
+- Withdrawing access takes effect on the caller's **next request**, not when their token expires,
+  because the grant is read from the database on every call.
+- Neon signs with **EdDSA (Ed25519)**, which neither .NET nor `Microsoft.IdentityModel` implements.
+  Verification is supplied by Bouncy Castle through `EdDsaSecurityKey`; issuer, audience, lifetime
+  and algorithm validation stay with the framework.
+- The dashboard sends a bearer token, not a cookie, so no ambient credential rides on a cross-site
+  request and there is no CSRF surface. That changes the day anything moves to cookie auth.
+- Angular never receives a database connection string. It talks only to this API over HTTPS.
 
 ---
 

@@ -50,10 +50,17 @@ public static class DependencyInjection
 
         services.Configure<JwtOptions>(configuration.GetSection(JwtOptions.SectionName));
 
+        // Where the Angular dashboard's tokens come from. Bound even when absent, so the
+        // authentication handler can see that it is unconfigured and refuse rather than guess.
+        services.Configure<NeonAuthOptions>(configuration.GetSection(NeonAuthOptions.SectionName));
+
         services.AddScoped<IStoreRepository, StoreRepository>();
         services.AddScoped<ITerminalRepository, TerminalRepository>();
         services.AddScoped<IEnrollmentCodeRepository, EnrollmentCodeRepository>();
+        services.AddScoped<IProductKeyRepository, ProductKeyRepository>();
         services.AddScoped<ISyncEventRepository, SyncEventRepository>();
+        services.AddScoped<IDashboardUserRepository, DashboardUserRepository>();
+        services.AddScoped<IDashboardReadRepository, DashboardReadRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         services.AddSingleton<ISecretHasher, BcryptSecretHasher>();

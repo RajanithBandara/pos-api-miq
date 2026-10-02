@@ -4,7 +4,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using POS.Api.Authentication;
+using POS.Api.Controllers.Dashboard;
 using POS.Application.Common.Models;
+using POS.Application.Dashboard;
 using POS.Application.Provisioning;
 using POS.Application.Terminals;
 
@@ -108,6 +110,42 @@ public class ProvisioningController : ControllerBase
             return StatusCode(Map(result.ErrorCode), ApiResponse<object>.Fail(result.Error!, "Terminal not updated"));
 
         return Ok(ApiResponse<TerminalDto>.Ok(result.Value!, $"Terminal {terminalAction.ToLowerInvariant()}d."));
+    }
+
+    /// <summary>
+    /// Creates the first dashboard administrator.
+    ///
+    /// This exists because of a genuine ordering problem, not as a convenience: the admin
+    /// endpoints need an administrator grant, and until one exists there is nobody who can create
+    /// one. The provisioning key breaks that cycle exactly once, in the same way it already
+    /// bootstraps the first store. Everything afterwards belongs on /api/admin/dashboard-users.
+    /// </summary>
+    [HttpPost("dashboard-users")]
+    [ProducesResponseType(typeof(ApiResponse<DashboardUserDto>), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> GrantDashboardAccess(
+        [FromBody] GrantDashboardAccessRequest request,
+        [FromServices] IDashboardAccessService access,
+        CancellationToken cancellationToken)
+    {
+        var result = await access.GrantAsync(request, cancellationToken);
+
+        if (result.IsFailure)
+            return StatusCode(DashboardAccessResults.Map(result.ErrorCode),
+                ApiResponse<object>.Fail(result.Error!, "Access not granted"));
+
+        return StatusCode(StatusCodes.Status201Created,
+            ApiResponse<DashboardUserDto>.Ok(result.Value!, "Dashboard access granted."));
+    }
+
+    [HttpGet("dashboard-users")]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<DashboardUserDto>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetDashboardUsers(
+        [FromServices] IDashboardAccessService access,
+        CancellationToken cancellationToken)
+    {
+        var users = await access.GetUsersAsync(cancellationToken);
+        return Ok(ApiResponse<IReadOnlyList<DashboardUserDto>>.Ok(users));
     }
 
     private static int Map(string? errorCode) => errorCode switch

@@ -31,6 +31,14 @@ public interface IEnrollmentCodeRepository
     Task AddAsync(TerminalEnrollmentCode code, CancellationToken cancellationToken = default);
 }
 
+public interface IProductKeyRepository
+{
+    Task<ProductKey?> FindByCodeAsync(string keyCode, CancellationToken cancellationToken = default);
+    Task<ProductKey?> FindByIdAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<ProductKey?> FindByStoreIdAsync(Guid storeId, CancellationToken cancellationToken = default);
+    Task AddAsync(ProductKey key, CancellationToken cancellationToken = default);
+}
+
 public sealed record SyncEventSummary(
     long StoreCount,
     long TerminalCount,

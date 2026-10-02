@@ -82,6 +82,30 @@ public sealed class EnrollmentCodeRepository(AppDbContext db) : IEnrollmentCodeR
         await db.TerminalEnrollmentCodes.AddAsync(code, cancellationToken);
 }
 
+public sealed class ProductKeyRepository(AppDbContext db) : IProductKeyRepository
+{
+    public Task<ProductKey?> FindByCodeAsync(string keyCode, CancellationToken cancellationToken = default)
+    {
+        var normalised = keyCode.Trim().ToUpperInvariant();
+        return db.ProductKeys
+            .Include(k => k.AssignedStore)
+            .FirstOrDefaultAsync(k => k.KeyCode == normalised, cancellationToken);
+    }
+
+    public Task<ProductKey?> FindByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.ProductKeys
+            .Include(k => k.AssignedStore)
+            .FirstOrDefaultAsync(k => k.Id == id, cancellationToken);
+
+    public Task<ProductKey?> FindByStoreIdAsync(Guid storeId, CancellationToken cancellationToken = default) =>
+        db.ProductKeys
+            .Include(k => k.AssignedStore)
+            .FirstOrDefaultAsync(k => k.AssignedStoreId == storeId, cancellationToken);
+
+    public async Task AddAsync(ProductKey key, CancellationToken cancellationToken = default) =>
+        await db.ProductKeys.AddAsync(key, cancellationToken);
+}
+
 public sealed class UnitOfWork(AppDbContext db) : IUnitOfWork
 {
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) =>

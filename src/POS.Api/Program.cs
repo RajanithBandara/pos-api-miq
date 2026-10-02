@@ -1,7 +1,5 @@
 using System;
-using System.Text;
 using System.Text.Json.Serialization;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -10,13 +8,12 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Tokens;
+using POS.Api.Authentication;
 using POS.Api.Authorization;
 using POS.Api.Extensions;
 using POS.Api.Middleware;
 using POS.Application;
 using POS.Infrastructure;
-using POS.Infrastructure.Authentication;
 using POS.Infrastructure.Persistence;
 using Serilog;
 
@@ -45,39 +42,13 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
     });
 
-// Terminal bearer authentication
-var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
-var jwtSecret = jwtSection["SecretKey"] ?? "POS_SUPER_SECRET_SECURITY_SIGNING_KEY_2026_PRODUCTION_MIQ_API_TOKEN";
+// Two bearer schemes: the till's existing terminal token, and Neon Auth for the web dashboard.
+// PosAuth stays the default, so nothing that authenticated before changes behaviour.
+builder.Services.AddPosAndDashboardAuthentication(builder.Configuration, builder.Environment);
 
-if (string.IsNullOrWhiteSpace(jwtSecret) || Encoding.UTF8.GetByteCount(jwtSecret) < 32)
-{
-    jwtSecret = "POS_SUPER_SECRET_SECURITY_SIGNING_KEY_2026_PRODUCTION_MIQ_API_TOKEN";
-}
-
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
-        options.SaveToken = true;
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSection["Issuer"] ?? "POS-API",
-            ValidAudience = jwtSection["Audience"] ?? "POS-Clients",
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-            ClockSkew = TimeSpan.FromMinutes(1)
-        };
-    });
-
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy(AuthorizationPolicies.Terminal, policy =>
-        policy.RequireAuthenticatedUser()
-              .RequireClaim(TerminalClaims.TokenKind, TerminalClaims.TerminalTokenKind));
-});
+// Each policy names the scheme allowed to satisfy it, so an endpoint cannot be reached with the
+// other client's credential even if that credential is perfectly valid.
+builder.Services.AddApiAuthorization();
 
 // Health Checks
 builder.Services.AddHealthChecks()
@@ -86,7 +57,13 @@ builder.Services.AddHealthChecks()
 // Swagger / OpenAPI
 builder.Services.AddSwaggerDocumentation();
 
-// Configurable CORS
+// Configurable CORS. The browser origins allowed to call this API — the Angular dashboard, and
+// nothing else. Origins are always an explicit list, never a wildcard: the policy allows
+// credentials, and a wildcard combined with that is what turns a browser into a confused deputy.
+//
+// The dashboard authenticates with a bearer token in the Authorization header rather than a
+// cookie, so no ambient credential is attached to a cross-site request and there is no CSRF
+// surface here to defend. That stops being true the day anything moves to cookie authentication.
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
     ?? new[] { "http://localhost:3000" };
 
@@ -110,17 +87,24 @@ using (var scope = app.Services.CreateScope())
     var logger = services.GetRequiredService<ILogger<Program>>();
     var context = services.GetService<AppDbContext>();
 
-    if (context != null && context.Database.IsRelational())
+    if (context != null)
     {
-        try
+        if (context.Database.IsRelational())
         {
-            logger.LogInformation("Applying EF Core migrations to database...");
-            await context.Database.MigrateAsync();
-            logger.LogInformation("EF Core migrations applied successfully.");
+            try
+            {
+                logger.LogInformation("Applying EF Core migrations to database...");
+                await context.Database.MigrateAsync();
+                logger.LogInformation("EF Core migrations applied successfully.");
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to apply migrations on startup.");
+            }
         }
-        catch (Exception ex)
+        else
         {
-            logger.LogError(ex, "Failed to apply migrations on startup.");
+            await context.Database.EnsureCreatedAsync();
         }
     }
 }

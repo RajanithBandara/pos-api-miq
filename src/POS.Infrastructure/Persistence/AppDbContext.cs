@@ -13,6 +13,10 @@ public class AppDbContext : DbContext
     public DbSet<Terminal> Terminals => Set<Terminal>();
     public DbSet<TerminalEnrollmentCode> TerminalEnrollmentCodes => Set<TerminalEnrollmentCode>();
     public DbSet<SyncEvent> SyncEvents => Set<SyncEvent>();
+    public DbSet<ProductKey> ProductKeys => Set<ProductKey>();
+
+    /// <summary>Who may use the web dashboard. See DashboardUser for why this is ours and not Neon's.</summary>
+    public DbSet<DashboardUser> DashboardUsers => Set<DashboardUser>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
