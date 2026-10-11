@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using POS.Application.Common.Models;
 using POS.Application.Provisioning;
 using POS.Application.Terminals;
@@ -326,5 +327,75 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
         var second = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
             new CreateStoreRequest(code, "Second", null, null, null, null));
         second.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task Enroll_StoreWithAssignedProductKey_EnforcesTerminalLimit()
+    {
+        var client = CreateClient();
+        var provisioning = CreateProvisioningClient();
+
+        // 1. Create a store with provisioning key
+        var storeCode = "LIM" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        var storeResponse = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
+            new CreateStoreRequest(storeCode, "Limited Store", null, null, null, null));
+        storeResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        var store = (await storeResponse.Content.ReadFromJsonAsync<ApiResponse<StoreDto>>(JsonOpts))!.Data!;
+
+        // 2. Assign a product key to this store with MaxTerminals = 2
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var keys = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IProductKeyRepository>();
+            var uow = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IUnitOfWork>();
+            var testKey = POS.Domain.Entities.ProductKey.Create($"MIQ-STD-{Guid.NewGuid():N}"[..24], "STD", maxTerminals: 2);
+            testKey.AssignToStore(store.Id);
+            await keys.AddAsync(testKey);
+            await uow.SaveChangesAsync();
+        }
+
+        // 3. Issue enrollment codes
+        async Task<string> IssueCodeAsync()
+        {
+            var codeResp = await provisioning.PostAsJsonAsync(
+                $"/api/provisioning/stores/{store.Id}/enrollment-codes",
+                new IssueEnrollmentCodeRequest(60, "limit test"));
+            return (await codeResp.Content.ReadFromJsonAsync<ApiResponse<EnrollmentCodeDto>>(JsonOpts))!.Data!.Code;
+        }
+
+        var code1 = await IssueCodeAsync();
+        var code2 = await IssueCodeAsync();
+        var code3 = await IssueCodeAsync();
+
+        // 4. Enroll terminal 1 - succeeds
+        var t1Uid = Guid.NewGuid();
+        var enroll1 = await client.PostAsJsonAsync("/api/terminals/enroll",
+            new EnrollTerminalRequest(code1, t1Uid, "01", "Counter 1", null, null));
+        enroll1.StatusCode.Should().Be(HttpStatusCode.OK);
+        var t1Data = (await enroll1.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
+
+        // 5. Enroll terminal 2 - reaches max limit (2) - succeeds
+        var t2Uid = Guid.NewGuid();
+        var enroll2 = await client.PostAsJsonAsync("/api/terminals/enroll",
+            new EnrollTerminalRequest(code2, t2Uid, "02", "Counter 2", null, null));
+        enroll2.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // 6. Enroll terminal 3 - exceeds max limit (2) - rejected!
+        var t3Uid = Guid.NewGuid();
+        var enroll3 = await client.PostAsJsonAsync("/api/terminals/enroll",
+            new EnrollTerminalRequest(code3, t3Uid, "03", "Counter 3", null, null));
+        enroll3.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var err = await enroll3.Content.ReadFromJsonAsync<ApiResponse<object>>(JsonOpts);
+        err!.Errors.Should().Contain(e => e.Contains("License limit reached"));
+
+        // 7. Revoke terminal 1 - frees up 1 slot
+        var revoke = await provisioning.PostAsync($"/api/provisioning/terminals/{t1Data.TerminalId}/revoke", null);
+        revoke.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // 8. Enroll terminal 3 with a new code - now succeeds!
+        var code4 = await IssueCodeAsync();
+        var enroll3Retry = await client.PostAsJsonAsync("/api/terminals/enroll",
+            new EnrollTerminalRequest(code4, t3Uid, "03", "Counter 3", null, null));
+        enroll3Retry.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }

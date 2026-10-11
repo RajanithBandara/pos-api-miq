@@ -26,6 +26,7 @@ public sealed class LicensingService(
     IProductKeyRepository keys,
     IStoreRepository stores,
     ITerminalRepository terminals,
+    ISyncEventRepository syncEvents,
     ISecretHasher hasher,
     IUnitOfWork unitOfWork,
     ILogger<LicensingService> logger) : ILicensingService
@@ -140,6 +141,19 @@ public sealed class LicensingService(
 
             if (!key.AssignedStoreId.HasValue)
             {
+                // Lock the product key to prevent concurrent activation requests from creating duplicate stores
+                await syncEvents.AcquireStoreWriteLockAsync(key.Id, ct);
+
+                // Reload the key to check if a concurrent activation completed just before acquiring the lock
+                var reloadedKey = await keys.FindByIdAsync(key.Id, ct);
+                if (reloadedKey is not null && reloadedKey.AssignedStoreId.HasValue)
+                {
+                    key = reloadedKey;
+                }
+            }
+
+            if (!key.AssignedStoreId.HasValue)
+            {
                 // Scenario 1: Initial Store Registration
                 if (string.IsNullOrWhiteSpace(request.StoreName))
                     return Result<ActivateStoreLicenseResponse>.Failure("Store name is required for new store registration.", "missing_store_name");
@@ -165,6 +179,8 @@ public sealed class LicensingService(
             else
             {
                 // Scenario 2: Enrolling an additional terminal on an existing store
+                await syncEvents.AcquireStoreWriteLockAsync(key.AssignedStoreId.Value, ct);
+
                 var foundStore = await stores.FindByIdAsync(key.AssignedStoreId.Value, ct);
                 if (foundStore is null || !foundStore.IsActive)
                     return Result<ActivateStoreLicenseResponse>.Failure("The store linked to this product key is inactive or not found.", "store_inactive");

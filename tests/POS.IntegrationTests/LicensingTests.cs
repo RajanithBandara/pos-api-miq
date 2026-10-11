@@ -109,5 +109,59 @@ public class LicensingTests : IClassFixture<CustomWebApplicationFactory>
         secondEnvelope!.Data!.StoreId.Should().Be(storeId);
         secondEnvelope.Data.TerminalUid.Should().Be(terminal2Uid);
         secondEnvelope.Data.ApiKey.Should().NotBeNullOrWhiteSpace();
+
+        // 4. Third terminal: reaches the 3 terminal limit for PRO tier
+        var terminal3Uid = Guid.NewGuid();
+        var thirdActivateResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new ActivateStoreLicenseRequest(
+                ProductKey: "MIQ-PRO-7K4D-92LX-AB83",
+                TerminalUid: terminal3Uid,
+                CounterNumber: "03",
+                CounterName: "Third Register"));
+
+        thirdActivateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // 5. Fourth terminal: exceeds the 3 terminal limit and must be rejected!
+        var terminal4Uid = Guid.NewGuid();
+        var fourthActivateResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new ActivateStoreLicenseRequest(
+                ProductKey: "MIQ-PRO-7K4D-92LX-AB83",
+                TerminalUid: terminal4Uid,
+                CounterNumber: "04",
+                CounterName: "Fourth Register"));
+
+        fourthActivateResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var fourthEnvelope = await fourthActivateResponse.Content.ReadFromJsonAsync<ApiResponse<object>>(JsonOpts);
+        fourthEnvelope!.Errors.Should().Contain(e => e.Contains("License limit reached"));
+
+        // 6. Re-enrolling an existing terminal (terminal 1) rotates key without exceeding limit
+        var reEnrollResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new ActivateStoreLicenseRequest(
+                ProductKey: "MIQ-PRO-7K4D-92LX-AB83",
+                TerminalUid: terminal1Uid,
+                CounterNumber: "01",
+                CounterName: "Front Desk Reinstalled"));
+
+        reEnrollResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var reEnrollEnvelope = await reEnrollResponse.Content.ReadFromJsonAsync<ApiResponse<ActivateStoreLicenseResponse>>(JsonOpts);
+        reEnrollEnvelope!.Data!.TerminalUid.Should().Be(terminal1Uid);
+        reEnrollEnvelope.Data.ApiKey.Should().NotBe(activateEnvelope.Data.ApiKey);
+
+        // 7. Enrolling with different store details when key is already assigned does NOT replace or create store
+        var anotherTerminalUid = Guid.NewGuid();
+        var ignoreDetailsResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new ActivateStoreLicenseRequest(
+                ProductKey: "MIQ-PRO-7K4D-92LX-AB83",
+                TerminalUid: terminal2Uid, // re-registering terminal 2
+                StoreName: "Completely Different Store Name",
+                StoreCode: "DIFFERENT99",
+                CounterNumber: "02",
+                CounterName: "Register 2"));
+
+        ignoreDetailsResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var ignoreDetailsEnvelope = await ignoreDetailsResponse.Content.ReadFromJsonAsync<ApiResponse<ActivateStoreLicenseResponse>>(JsonOpts);
+        ignoreDetailsEnvelope!.Data!.StoreId.Should().Be(storeId);
+        ignoreDetailsEnvelope.Data.StoreCode.Should().Be(storeCode);
+        ignoreDetailsEnvelope.Data.StoreName.Should().Be("Automated Test Store");
     }
 }

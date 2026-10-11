@@ -19,6 +19,8 @@ public sealed class TerminalEnrollmentService(
     ITerminalRepository terminals,
     IStoreRepository stores,
     IEnrollmentCodeRepository codes,
+    IProductKeyRepository keys,
+    ISyncEventRepository syncEvents,
     ISecretHasher hasher,
     ITerminalTokenService tokens,
     IUnitOfWork unitOfWork,
@@ -30,6 +32,9 @@ public sealed class TerminalEnrollmentService(
     public const string CodeStoreInactive = "store_inactive";
     public const string CodeTerminalConflict = "terminal_belongs_to_another_store";
     public const string CodeTerminalRevoked = "terminal_revoked";
+    public const string CodeTerminalLimitReached = "terminal_limit_reached";
+    public const string CodeKeyExpired = "key_expired";
+    public const string CodeKeySuspended = "key_suspended";
     public const string CodeInvalidCredentials = "invalid_credentials";
     public const string CodeNotFound = "not_found";
 
@@ -93,14 +98,69 @@ public sealed class TerminalEnrollmentService(
             return Result<EnrollTerminalResponse>.Failure(
                 "This terminal has been revoked and cannot be re-enrolled.", CodeTerminalRevoked);
 
+        // Validate the store's product key license and terminal limit before enrolling
+        var productKey = await keys.FindByStoreIdAsync(store.Id, cancellationToken);
+        if (productKey is not null)
+        {
+            if (productKey.Status == ProductKeyStatus.Expired || (productKey.ExpiresAtUtc.HasValue && productKey.ExpiresAtUtc.Value <= DateTime.UtcNow))
+            {
+                logger.LogWarning("Enrollment refused: store {StoreId} product key is expired.", store.Id);
+                return Result<EnrollTerminalResponse>.Failure("The store license has expired.", CodeKeyExpired);
+            }
+
+            if (productKey.Status == ProductKeyStatus.Suspended)
+            {
+                logger.LogWarning("Enrollment refused: store {StoreId} product key is suspended.", store.Id);
+                return Result<EnrollTerminalResponse>.Failure("The store license has been suspended.", CodeKeySuspended);
+            }
+
+            var storeTerminals = await terminals.GetByStoreAsync(store.Id, cancellationToken);
+            var activeTerminalsCount = storeTerminals.Count(t => t.Status != TerminalStatus.Revoked && t.TerminalUid != request.TerminalUid);
+
+            if (activeTerminalsCount >= productKey.MaxTerminals)
+            {
+                logger.LogWarning("Enrollment refused: store {StoreId} reached terminal limit {Max} (current: {Count})",
+                    store.Id, productKey.MaxTerminals, activeTerminalsCount);
+                return Result<EnrollTerminalResponse>.Failure(
+                    $"License limit reached. Your {productKey.PlanTier} plan allows up to {productKey.MaxTerminals} register terminals.",
+                    CodeTerminalLimitReached);
+            }
+        }
+
         // Generated outside the transaction on purpose: the operation below may be replayed
         // after a transient database fault, and minting a new secret on each attempt would
         // hand back a key whose hash is not the one that ended up committed.
         var apiKey = SecretGenerator.NewApiKey();
         var apiKeyHash = hasher.Hash(apiKey);
 
-        var terminal = await unitOfWork.ExecuteInTransactionAsync(async ct =>
+        var enrollmentResult = await unitOfWork.ExecuteInTransactionAsync(async ct =>
         {
+            // Acquire exclusive advisory lock for this store during enrollment to prevent concurrent
+            // enrollment requests from exceeding the license limit or racing on enrollment codes.
+            await syncEvents.AcquireStoreWriteLockAsync(store.Id, ct);
+
+            // Re-validate code status under the lock to prevent concurrent consumption
+            var lockRejection = code.RejectionReason(DateTime.UtcNow);
+            if (lockRejection is not null)
+            {
+                logger.LogWarning("Enrollment refused under lock for code {CodeId}: {Reason}", code.Id, lockRejection);
+                return Result<EnrollTerminalResponse>.Failure("That enrollment code is not valid.", CodeInvalidEnrollment);
+            }
+
+            if (productKey is not null)
+            {
+                var currentTerminals = await terminals.GetByStoreAsync(store.Id, ct);
+                var currentActive = currentTerminals.Count(t => t.Status != TerminalStatus.Revoked && t.TerminalUid != request.TerminalUid);
+                if (currentActive >= productKey.MaxTerminals)
+                {
+                    logger.LogWarning("Enrollment refused under lock: store {StoreId} limit reached {Max} (current: {Count})",
+                        store.Id, productKey.MaxTerminals, currentActive);
+                    return Result<EnrollTerminalResponse>.Failure(
+                        $"License limit reached. Your {productKey.PlanTier} plan allows up to {productKey.MaxTerminals} register terminals.",
+                        CodeTerminalLimitReached);
+                }
+            }
+
             Terminal enrolled;
             if (existing is null)
             {
@@ -135,20 +195,20 @@ public sealed class TerminalEnrollmentService(
             code.Consume(enrolled.Id);
             await unitOfWork.SaveChangesAsync(ct);
 
-            return enrolled;
+            logger.LogInformation("Terminal {TerminalUid} enrolled to store {StoreCode} as {TerminalId}",
+                enrolled.TerminalUid, store.Code, enrolled.Id);
+
+            return Result<EnrollTerminalResponse>.Success(new EnrollTerminalResponse(
+                enrolled.Id,
+                enrolled.TerminalUid,
+                store.Id,
+                store.Name,
+                store.Code,
+                apiKey,
+                enrolled.EnrolledAtUtc));
         }, cancellationToken);
 
-        logger.LogInformation("Terminal {TerminalUid} enrolled to store {StoreCode} as {TerminalId}",
-            terminal.TerminalUid, store.Code, terminal.Id);
-
-        return Result<EnrollTerminalResponse>.Success(new EnrollTerminalResponse(
-            terminal.Id,
-            terminal.TerminalUid,
-            store.Id,
-            store.Name,
-            store.Code,
-            apiKey,
-            terminal.EnrolledAtUtc));
+        return enrollmentResult;
     }
 
     public async Task<Result<TerminalTokenResponse>> IssueTokenAsync(

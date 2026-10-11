@@ -94,6 +94,9 @@ public class TerminalsController : ControllerBase
         TerminalEnrollmentService.CodeTerminalConflict => StatusCodes.Status409Conflict,
         TerminalEnrollmentService.CodeStoreInactive => StatusCodes.Status409Conflict,
         TerminalEnrollmentService.CodeTerminalRevoked => StatusCodes.Status403Forbidden,
+        TerminalEnrollmentService.CodeTerminalLimitReached => StatusCodes.Status409Conflict,
+        TerminalEnrollmentService.CodeKeyExpired => StatusCodes.Status403Forbidden,
+        TerminalEnrollmentService.CodeKeySuspended => StatusCodes.Status403Forbidden,
         _ => StatusCodes.Status400BadRequest
     };
 }
