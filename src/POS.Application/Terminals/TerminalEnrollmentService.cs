@@ -3,213 +3,28 @@ using POS.Application.Common.Interfaces;
 using POS.Application.Common.Models;
 using POS.Application.Common.Security;
 using POS.Domain.Entities;
-using POS.Domain.Enums;
 using POS.Domain.Interfaces;
 
 namespace POS.Application.Terminals;
 
 public interface ITerminalEnrollmentService
 {
-    Task<Result<EnrollTerminalResponse>> EnrollAsync(EnrollTerminalRequest request, CancellationToken cancellationToken = default);
     Task<Result<TerminalTokenResponse>> IssueTokenAsync(TerminalTokenRequest request, CancellationToken cancellationToken = default);
     Task<Result<TerminalDto>> GetByIdAsync(Guid terminalId, CancellationToken cancellationToken = default);
 }
 
 public sealed class TerminalEnrollmentService(
     ITerminalRepository terminals,
-    IStoreRepository stores,
-    IEnrollmentCodeRepository codes,
-    IProductKeyRepository keys,
-    ISyncEventRepository syncEvents,
     ISecretHasher hasher,
     ITerminalTokenService tokens,
     IUnitOfWork unitOfWork,
     ILogger<TerminalEnrollmentService> logger) : ITerminalEnrollmentService
 {
-    // Error codes, not prose, so the controller maps outcomes to status codes without
-    // matching on message text.
-    public const string CodeInvalidEnrollment = "invalid_enrollment_code";
-    public const string CodeStoreInactive = "store_inactive";
-    public const string CodeTerminalConflict = "terminal_belongs_to_another_store";
-    public const string CodeTerminalRevoked = "terminal_revoked";
-    public const string CodeTerminalLimitReached = "terminal_limit_reached";
-    public const string CodeKeyExpired = "key_expired";
-    public const string CodeKeySuspended = "key_suspended";
     public const string CodeInvalidCredentials = "invalid_credentials";
     public const string CodeNotFound = "not_found";
 
     /// <summary>A real BCrypt hash of a value nothing knows, used only to burn matching time.</summary>
     private const string DummyHash = "$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
-
-    public async Task<Result<EnrollTerminalResponse>> EnrollAsync(
-        EnrollTerminalRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        if (request.TerminalUid == Guid.Empty)
-            return Result<EnrollTerminalResponse>.Failure("A terminal identifier is required.", CodeInvalidEnrollment);
-
-        if (string.IsNullOrWhiteSpace(request.EnrollmentCode))
-            return Result<EnrollTerminalResponse>.Failure("An enrollment code is required.", CodeInvalidEnrollment);
-
-        var normalised = request.EnrollmentCode.Trim().ToUpperInvariant();
-        var code = await codes.FindByCodeAsync(normalised, cancellationToken);
-
-        // A missing code and an expired one answer identically. Telling an unauthenticated
-        // caller which codes exist would turn this endpoint into an oracle it could sweep;
-        // the distinction is kept in the log, where it helps and cannot be probed.
-        if (code is null)
-        {
-            logger.LogWarning("Enrollment refused: code not found (terminal {TerminalUid})", request.TerminalUid);
-            return Result<EnrollTerminalResponse>.Failure("That enrollment code is not valid.", CodeInvalidEnrollment);
-        }
-
-        var rejection = code.RejectionReason(DateTime.UtcNow);
-        if (rejection is not null)
-        {
-            logger.LogWarning("Enrollment refused for code {CodeId}: {Reason} (terminal {TerminalUid})",
-                code.Id, rejection, request.TerminalUid);
-            return Result<EnrollTerminalResponse>.Failure("That enrollment code is not valid.", CodeInvalidEnrollment);
-        }
-
-        var store = await stores.FindByIdAsync(code.StoreId, cancellationToken);
-        if (store is null)
-            return Result<EnrollTerminalResponse>.Failure("That enrollment code is not valid.", CodeInvalidEnrollment);
-
-        if (!store.IsActive)
-            return Result<EnrollTerminalResponse>.Failure(
-                "That store is not active and cannot take new terminals.", CodeStoreInactive);
-
-        var existing = await terminals.FindByUidAsync(request.TerminalUid, cancellationToken);
-
-        // Both refusals are checked before any secret is generated or written, so a rejected
-        // enrollment leaves nothing behind.
-        if (existing is not null && existing.StoreId != store.Id)
-        {
-            logger.LogWarning(
-                "Enrollment refused: terminal {TerminalUid} belongs to store {CurrentStore}, code targets {TargetStore}",
-                request.TerminalUid, existing.StoreId, store.Id);
-
-            return Result<EnrollTerminalResponse>.Failure(
-                "This terminal is already enrolled to a different store. Revoke it there before re-enrolling.",
-                CodeTerminalConflict);
-        }
-
-        if (existing is not null && existing.Status == TerminalStatus.Revoked)
-            return Result<EnrollTerminalResponse>.Failure(
-                "This terminal has been revoked and cannot be re-enrolled.", CodeTerminalRevoked);
-
-        // Validate the store's product key license and terminal limit before enrolling
-        var productKey = await keys.FindByStoreIdAsync(store.Id, cancellationToken);
-        if (productKey is not null)
-        {
-            if (productKey.Status == ProductKeyStatus.Expired || (productKey.ExpiresAtUtc.HasValue && productKey.ExpiresAtUtc.Value <= DateTime.UtcNow))
-            {
-                logger.LogWarning("Enrollment refused: store {StoreId} product key is expired.", store.Id);
-                return Result<EnrollTerminalResponse>.Failure("The store license has expired.", CodeKeyExpired);
-            }
-
-            if (productKey.Status == ProductKeyStatus.Suspended)
-            {
-                logger.LogWarning("Enrollment refused: store {StoreId} product key is suspended.", store.Id);
-                return Result<EnrollTerminalResponse>.Failure("The store license has been suspended.", CodeKeySuspended);
-            }
-
-            var storeTerminals = await terminals.GetByStoreAsync(store.Id, cancellationToken);
-            var activeTerminalsCount = storeTerminals.Count(t => t.Status != TerminalStatus.Revoked && t.TerminalUid != request.TerminalUid);
-
-            if (activeTerminalsCount >= productKey.MaxTerminals)
-            {
-                logger.LogWarning("Enrollment refused: store {StoreId} reached terminal limit {Max} (current: {Count})",
-                    store.Id, productKey.MaxTerminals, activeTerminalsCount);
-                return Result<EnrollTerminalResponse>.Failure(
-                    $"License limit reached. Your {productKey.PlanTier} plan allows up to {productKey.MaxTerminals} register terminals.",
-                    CodeTerminalLimitReached);
-            }
-        }
-
-        // Generated outside the transaction on purpose: the operation below may be replayed
-        // after a transient database fault, and minting a new secret on each attempt would
-        // hand back a key whose hash is not the one that ended up committed.
-        var apiKey = SecretGenerator.NewApiKey();
-        var apiKeyHash = hasher.Hash(apiKey);
-
-        var enrollmentResult = await unitOfWork.ExecuteInTransactionAsync(async ct =>
-        {
-            // Acquire exclusive advisory lock for this store during enrollment to prevent concurrent
-            // enrollment requests from exceeding the license limit or racing on enrollment codes.
-            await syncEvents.AcquireStoreWriteLockAsync(store.Id, ct);
-
-            // Re-validate code status under the lock to prevent concurrent consumption
-            var lockRejection = code.RejectionReason(DateTime.UtcNow);
-            if (lockRejection is not null)
-            {
-                logger.LogWarning("Enrollment refused under lock for code {CodeId}: {Reason}", code.Id, lockRejection);
-                return Result<EnrollTerminalResponse>.Failure("That enrollment code is not valid.", CodeInvalidEnrollment);
-            }
-
-            if (productKey is not null)
-            {
-                var currentTerminals = await terminals.GetByStoreAsync(store.Id, ct);
-                var currentActive = currentTerminals.Count(t => t.Status != TerminalStatus.Revoked && t.TerminalUid != request.TerminalUid);
-                if (currentActive >= productKey.MaxTerminals)
-                {
-                    logger.LogWarning("Enrollment refused under lock: store {StoreId} limit reached {Max} (current: {Count})",
-                        store.Id, productKey.MaxTerminals, currentActive);
-                    return Result<EnrollTerminalResponse>.Failure(
-                        $"License limit reached. Your {productKey.PlanTier} plan allows up to {productKey.MaxTerminals} register terminals.",
-                        CodeTerminalLimitReached);
-                }
-            }
-
-            Terminal enrolled;
-            if (existing is null)
-            {
-                enrolled = Terminal.Enroll(
-                    store.Id,
-                    request.TerminalUid,
-                    apiKeyHash,
-                    request.CounterNumber,
-                    request.CounterName,
-                    request.MachineName,
-                    request.AppVersion);
-
-                await terminals.AddAsync(enrolled, ct);
-            }
-            else
-            {
-                // The same physical till enrolling again: a reinstall, or a machine rebuilt
-                // from an image. It keeps its identity and everything already filed under it;
-                // only the credential changes. That is what makes recovery possible without
-                // orphaning the events already attributed to this terminal.
-                existing.RotateApiKey(apiKeyHash);
-                existing.UpdateDescription(request.CounterNumber, request.CounterName, request.MachineName, request.AppVersion);
-                enrolled = existing;
-            }
-
-            // Saved before the code is consumed so there is a real terminal id to record
-            // against it. Both writes land in the same transaction, so a failure between them
-            // cannot leave a spent code with no terminal, or a terminal with a code still
-            // spendable by someone else.
-            await unitOfWork.SaveChangesAsync(ct);
-
-            code.Consume(enrolled.Id);
-            await unitOfWork.SaveChangesAsync(ct);
-
-            logger.LogInformation("Terminal {TerminalUid} enrolled to store {StoreCode} as {TerminalId}",
-                enrolled.TerminalUid, store.Code, enrolled.Id);
-
-            return Result<EnrollTerminalResponse>.Success(new EnrollTerminalResponse(
-                enrolled.Id,
-                enrolled.TerminalUid,
-                store.Id,
-                store.Name,
-                store.Code,
-                apiKey,
-                enrolled.EnrolledAtUtc));
-        }, cancellationToken);
-
-        return enrollmentResult;
-    }
 
     public async Task<Result<TerminalTokenResponse>> IssueTokenAsync(
         TerminalTokenRequest request,

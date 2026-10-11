@@ -11,8 +11,6 @@ public interface IProvisioningService
 {
     Task<Result<StoreDto>> CreateStoreAsync(CreateStoreRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<StoreDto>> GetStoresAsync(bool includeInactive = false, CancellationToken cancellationToken = default);
-    Task<Result<EnrollmentCodeDto>> IssueEnrollmentCodeAsync(Guid storeId, IssueEnrollmentCodeRequest request, CancellationToken cancellationToken = default);
-    Task<Result<IReadOnlyList<EnrollmentCodeDto>>> GetEnrollmentCodesAsync(Guid storeId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<TerminalDto>> GetTerminalsAsync(Guid? storeId = null, CancellationToken cancellationToken = default);
     Task<Result<TerminalDto>> SetTerminalStatusAsync(Guid terminalId, string action, CancellationToken cancellationToken = default);
 }
@@ -20,20 +18,12 @@ public interface IProvisioningService
 public sealed class ProvisioningService(
     IStoreRepository stores,
     ITerminalRepository terminals,
-    IEnrollmentCodeRepository codes,
     IUnitOfWork unitOfWork,
     ILogger<ProvisioningService> logger) : IProvisioningService
 {
     public const string CodeDuplicateStore = "duplicate_store_code";
     public const string CodeNotFound = "not_found";
     public const string CodeInvalidAction = "invalid_action";
-
-    /// <summary>
-    /// Long enough for someone to walk to the till and key it in, short enough that a code
-    /// left on a screen stops working by itself.
-    /// </summary>
-    private const int DefaultValidForMinutes = 60;
-    private const int MaxValidForMinutes = 60 * 24 * 7;
 
     public async Task<Result<StoreDto>> CreateStoreAsync(
         CreateStoreRequest request,
@@ -75,64 +65,6 @@ public sealed class ProvisioningService(
     {
         var all = await stores.GetAllAsync(includeInactive, cancellationToken);
         return all.Select(s => MapStore(s, s.Terminals.Count)).ToList();
-    }
-
-    public async Task<Result<EnrollmentCodeDto>> IssueEnrollmentCodeAsync(
-        Guid storeId,
-        IssueEnrollmentCodeRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        var store = await stores.FindByIdAsync(storeId, cancellationToken);
-        if (store is null)
-            return Result<EnrollmentCodeDto>.Failure("Store not found.", CodeNotFound);
-
-        if (!store.IsActive)
-            return Result<EnrollmentCodeDto>.Failure(
-                "That store is not active, so it cannot take new terminals.", CodeInvalidAction);
-
-        var minutes = request.ValidForMinutes ?? DefaultValidForMinutes;
-        if (minutes < 1 || minutes > MaxValidForMinutes)
-            return Result<EnrollmentCodeDto>.Failure(
-                $"Validity must be between 1 and {MaxValidForMinutes} minutes.", CodeInvalidAction);
-
-        // Codes are short enough to be typed, so collisions are possible rather than
-        // theoretical. Retry on a taken code instead of relying on the unique index to throw.
-        string candidate;
-        var attempts = 0;
-        do
-        {
-            candidate = SecretGenerator.NewEnrollmentCode();
-            attempts++;
-        }
-        while (await codes.ExistsByCodeAsync(candidate, cancellationToken) && attempts < 10);
-
-        if (attempts >= 10)
-            return Result<EnrollmentCodeDto>.Failure(
-                "Could not allocate an unused enrollment code. Try again.", CodeInvalidAction);
-
-        var code = TerminalEnrollmentCode.Issue(store.Id, candidate, TimeSpan.FromMinutes(minutes), request.Note);
-
-        await codes.AddAsync(code, cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-
-        logger.LogInformation("Enrollment code {CodeId} issued for store {StoreCode}, valid {Minutes}m",
-            code.Id, store.Code, minutes);
-
-        return Result<EnrollmentCodeDto>.Success(MapCode(code, store.Name));
-    }
-
-    public async Task<Result<IReadOnlyList<EnrollmentCodeDto>>> GetEnrollmentCodesAsync(
-        Guid storeId,
-        CancellationToken cancellationToken = default)
-    {
-        var store = await stores.FindByIdAsync(storeId, cancellationToken);
-        if (store is null)
-            return Result<IReadOnlyList<EnrollmentCodeDto>>.Failure("Store not found.", CodeNotFound);
-
-        var all = await codes.GetByStoreAsync(storeId, cancellationToken);
-        IReadOnlyList<EnrollmentCodeDto> mapped = all.Select(c => MapCode(c, store.Name)).ToList();
-
-        return Result<IReadOnlyList<EnrollmentCodeDto>>.Success(mapped);
     }
 
     public async Task<IReadOnlyList<TerminalDto>> GetTerminalsAsync(
@@ -194,10 +126,6 @@ public sealed class ProvisioningService(
     private static StoreDto MapStore(Store s, int terminalCount) => new(
         s.Id, s.Code, s.Name, s.Address, s.ContactNumber, s.TaxRegistrationNumber,
         s.TimeZoneId, s.IsActive, terminalCount, s.CreatedAtUtc);
-
-    private static EnrollmentCodeDto MapCode(TerminalEnrollmentCode c, string storeName) => new(
-        c.Id, c.Code, c.StoreId, storeName, c.CreatedAtUtc, c.ExpiresAtUtc,
-        c.UsedAtUtc, c.UsedByTerminalId, c.IsRevoked, c.Note);
 
     private static TerminalDto MapTerminal(Terminal t) => new(
         t.Id, t.TerminalUid, t.StoreId, t.Store?.Name ?? string.Empty,

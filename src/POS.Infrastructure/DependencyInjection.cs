@@ -56,7 +56,6 @@ public static class DependencyInjection
 
         services.AddScoped<IStoreRepository, StoreRepository>();
         services.AddScoped<ITerminalRepository, TerminalRepository>();
-        services.AddScoped<IEnrollmentCodeRepository, EnrollmentCodeRepository>();
         services.AddScoped<IProductKeyRepository, ProductKeyRepository>();
         services.AddScoped<ISyncEventRepository, SyncEventRepository>();
         services.AddScoped<IDashboardUserRepository, DashboardUserRepository>();

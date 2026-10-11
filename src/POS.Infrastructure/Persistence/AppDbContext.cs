@@ -11,7 +11,6 @@ public class AppDbContext : DbContext
 
     public DbSet<Store> Stores => Set<Store>();
     public DbSet<Terminal> Terminals => Set<Terminal>();
-    public DbSet<TerminalEnrollmentCode> TerminalEnrollmentCodes => Set<TerminalEnrollmentCode>();
     public DbSet<SyncEvent> SyncEvents => Set<SyncEvent>();
     public DbSet<ProductKey> ProductKeys => Set<ProductKey>();
 

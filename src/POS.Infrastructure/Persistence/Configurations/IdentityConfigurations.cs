@@ -64,31 +64,3 @@ public sealed class TerminalConfiguration : IEntityTypeConfiguration<Terminal>
         builder.Ignore(t => t.CanAuthenticate);
     }
 }
-
-public sealed class TerminalEnrollmentCodeConfiguration : IEntityTypeConfiguration<TerminalEnrollmentCode>
-{
-    public void Configure(EntityTypeBuilder<TerminalEnrollmentCode> builder)
-    {
-        builder.ToTable("terminal_enrollment_codes");
-        builder.HasKey(c => c.Id);
-        builder.Property(c => c.Id).ValueGeneratedNever();
-
-        builder.Property(c => c.Code).HasMaxLength(16).IsRequired();
-        builder.Property(c => c.CreatedAtUtc).IsRequired();
-        builder.Property(c => c.ExpiresAtUtc).IsRequired();
-        builder.Property(c => c.IsRevoked).IsRequired();
-        builder.Property(c => c.Note).HasMaxLength(200);
-
-        // The enrollment endpoint is unauthenticated and looks codes up by this value, so it
-        // has to be both unique and indexed for a single-row hit.
-        builder.HasIndex(c => c.Code).IsUnique();
-        builder.HasIndex(c => c.StoreId);
-
-        builder.HasOne(c => c.Store)
-            .WithMany()
-            .HasForeignKey(c => c.StoreId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.Ignore(c => c.DomainEvents);
-    }
-}

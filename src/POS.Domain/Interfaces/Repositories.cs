@@ -23,14 +23,6 @@ public interface ITerminalRepository
     Task AddAsync(Terminal terminal, CancellationToken cancellationToken = default);
 }
 
-public interface IEnrollmentCodeRepository
-{
-    Task<TerminalEnrollmentCode?> FindByCodeAsync(string code, CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<TerminalEnrollmentCode>> GetByStoreAsync(Guid storeId, CancellationToken cancellationToken = default);
-    Task<bool> ExistsByCodeAsync(string code, CancellationToken cancellationToken = default);
-    Task AddAsync(TerminalEnrollmentCode code, CancellationToken cancellationToken = default);
-}
-
 public interface IProductKeyRepository
 {
     Task<ProductKey?> FindByCodeAsync(string keyCode, CancellationToken cancellationToken = default);

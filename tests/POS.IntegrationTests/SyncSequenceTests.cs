@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using POS.Application.Common.Models;
 using POS.Application.Provisioning;
 using POS.Application.Sync;
@@ -36,35 +37,55 @@ public class SyncSequenceTests : IClassFixture<CustomWebApplicationFactory>
 
     public SyncSequenceTests(CustomWebApplicationFactory factory) => _factory = factory;
 
+    private readonly System.Collections.Generic.Dictionary<Guid, string> _storeKeys = new();
+
     private async Task<(HttpClient Client, Guid StoreId)> EnrolledAsync(Guid? existingStore = null)
     {
-        var provisioning = _factory.CreateClient();
-        provisioning.DefaultRequestHeaders.Add("X-Provisioning-Key", CustomWebApplicationFactory.ProvisioningKey);
-
+        var client = _factory.CreateClient();
+        string productKey;
         Guid storeId;
+
         if (existingStore is Guid known)
         {
             storeId = known;
+            productKey = _storeKeys[known];
         }
         else
         {
-            var storeResponse = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
-                new CreateStoreRequest("Q" + Guid.NewGuid().ToString("N")[..7].ToUpperInvariant(),
-                    "Sequence Store", null, null, null, null));
-            storeId = (await storeResponse.Content.ReadFromJsonAsync<ApiResponse<StoreDto>>(JsonOpts))!.Data!.Id;
+            productKey = "MIQ-STD-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var keys = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IProductKeyRepository>();
+                var uow = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IUnitOfWork>();
+                await keys.AddAsync(POS.Domain.Entities.ProductKey.Create(productKey, "PRO", maxTerminals: 10));
+                await uow.SaveChangesAsync();
+            }
+
+            var storeCode = "Q" + Guid.NewGuid().ToString("N")[..7].ToUpperInvariant();
+            var initResp = await client.PostAsJsonAsync("/api/licensing/activate",
+                new POS.Application.Licensing.ActivateStoreLicenseRequest(
+                    ProductKey: productKey,
+                    TerminalUid: Guid.NewGuid(),
+                    StoreName: "Sequence Store",
+                    StoreCode: storeCode,
+                    CounterNumber: "00",
+                    CounterName: "Setup"));
+            var initData = (await initResp.Content.ReadFromJsonAsync<ApiResponse<POS.Application.Licensing.ActivateStoreLicenseResponse>>(JsonOpts))!.Data!;
+            storeId = initData.StoreId;
+            _storeKeys[storeId] = productKey;
         }
 
-        var codeResponse = await provisioning.PostAsJsonAsync(
-            $"/api/provisioning/stores/{storeId}/enrollment-codes", new IssueEnrollmentCodeRequest(60, null));
-        var code = (await codeResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollmentCodeDto>>(JsonOpts))!.Data!;
-
-        var client = _factory.CreateClient();
-        var enrollResponse = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code.Code, Guid.NewGuid(), "01", "Counter", null, null));
-        var enrolled = (await enrollResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
+        var terminalUid = Guid.NewGuid();
+        var activateResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new POS.Application.Licensing.ActivateStoreLicenseRequest(
+                ProductKey: productKey,
+                TerminalUid: terminalUid,
+                CounterNumber: "01",
+                CounterName: "Counter"));
+        var activated = (await activateResponse.Content.ReadFromJsonAsync<ApiResponse<POS.Application.Licensing.ActivateStoreLicenseResponse>>(JsonOpts))!.Data!;
 
         var tokenResponse = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(enrolled.TerminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(activated.TerminalUid, activated.ApiKey));
         var token = (await tokenResponse.Content.ReadFromJsonAsync<ApiResponse<TerminalTokenResponse>>(JsonOpts))!.Data!;
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);

@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using POS.Application.Common.Models;
 using POS.Application.Dashboard;
 using POS.Application.Provisioning;
@@ -90,20 +91,30 @@ public class DashboardAuthenticationTests : IClassFixture<CustomWebApplicationFa
     /// <summary>Enrols a till and returns a client carrying its POS bearer token.</summary>
     private async Task<HttpClient> TerminalClientAsync()
     {
-        var store = await CreateStoreAsync();
-
-        var codeResponse = await Provisioning().PostAsJsonAsync(
-            $"/api/provisioning/stores/{store.Id}/enrollment-codes",
-            new IssueEnrollmentCodeRequest(60, null));
-        var code = (await codeResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollmentCodeDto>>(JsonOpts))!.Data!;
-
         var client = _factory.CreateClient();
-        var enrollResponse = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code.Code, Guid.NewGuid(), "01", "Main", "TEST", "1.0.0"));
-        var enrolled = (await enrollResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
+        var key = "MIQ-STD-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var keys = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IProductKeyRepository>();
+            var uow = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IUnitOfWork>();
+            await keys.AddAsync(POS.Domain.Entities.ProductKey.Create(key, "PRO", maxTerminals: 5));
+            await uow.SaveChangesAsync();
+        }
+
+        var storeCode = "S" + Guid.NewGuid().ToString("N")[..7].ToUpperInvariant();
+        var terminalUid = Guid.NewGuid();
+        var activateResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new POS.Application.Licensing.ActivateStoreLicenseRequest(
+                ProductKey: key,
+                TerminalUid: terminalUid,
+                StoreName: "Auth Test Store",
+                StoreCode: storeCode,
+                CounterNumber: "01",
+                CounterName: "Main"));
+        var activated = (await activateResponse.Content.ReadFromJsonAsync<ApiResponse<POS.Application.Licensing.ActivateStoreLicenseResponse>>(JsonOpts))!.Data!;
 
         var tokenResponse = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(enrolled.TerminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(activated.TerminalUid, activated.ApiKey));
         var token = (await tokenResponse.Content.ReadFromJsonAsync<ApiResponse<TerminalTokenResponse>>(JsonOpts))!.Data!;
 
         return WithToken(token.AccessToken);

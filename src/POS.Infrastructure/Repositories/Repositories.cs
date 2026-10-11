@@ -58,30 +58,6 @@ public sealed class TerminalRepository(AppDbContext db) : ITerminalRepository
         await db.Terminals.AddAsync(terminal, cancellationToken);
 }
 
-public sealed class EnrollmentCodeRepository(AppDbContext db) : IEnrollmentCodeRepository
-{
-    public Task<TerminalEnrollmentCode?> FindByCodeAsync(string code, CancellationToken cancellationToken = default)
-    {
-        var normalised = code.Trim().ToUpperInvariant();
-        return db.TerminalEnrollmentCodes.FirstOrDefaultAsync(c => c.Code == normalised, cancellationToken);
-    }
-
-    public async Task<IReadOnlyList<TerminalEnrollmentCode>> GetByStoreAsync(Guid storeId, CancellationToken cancellationToken = default) =>
-        await db.TerminalEnrollmentCodes
-            .Where(c => c.StoreId == storeId)
-            .OrderByDescending(c => c.CreatedAtUtc)
-            .ToListAsync(cancellationToken);
-
-    public Task<bool> ExistsByCodeAsync(string code, CancellationToken cancellationToken = default)
-    {
-        var normalised = code.Trim().ToUpperInvariant();
-        return db.TerminalEnrollmentCodes.AnyAsync(c => c.Code == normalised, cancellationToken);
-    }
-
-    public async Task AddAsync(TerminalEnrollmentCode code, CancellationToken cancellationToken = default) =>
-        await db.TerminalEnrollmentCodes.AddAsync(code, cancellationToken);
-}
-
 public sealed class ProductKeyRepository(AppDbContext db) : IProductKeyRepository
 {
     public Task<ProductKey?> FindByCodeAsync(string keyCode, CancellationToken cancellationToken = default)

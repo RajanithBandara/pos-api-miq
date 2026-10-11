@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using POS.Application.Common.Models;
+using POS.Application.Licensing;
 using POS.Application.Provisioning;
 using POS.Application.Terminals;
 using POS.IntegrationTests.Infrastructure;
@@ -20,8 +21,6 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
 {
     private readonly CustomWebApplicationFactory _factory;
 
-    // Mirrors the API's own serializer: enums go over the wire as names, not ordinals, so the
-    // client has to read them the same way.
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -42,28 +41,35 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
         return client;
     }
 
-    /// <summary>Creates a store and mints a code, the way an installer would be set up.</summary>
-    private async Task<(Guid StoreId, string Code)> ProvisionStoreWithCodeAsync(string? storeCode = null)
+    /// <summary>Activates a terminal using a product key and returns its details.</summary>
+    private async Task<(Guid StoreId, Guid TerminalId, Guid TerminalUid, string ApiKey)> ActivateTerminalAsync(string? key = null)
     {
-        var provisioning = CreateProvisioningClient();
+        var client = CreateClient();
+        key ??= "MIQ-STD-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var keys = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IProductKeyRepository>();
+            var uow = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IUnitOfWork>();
+            await keys.AddAsync(POS.Domain.Entities.ProductKey.Create(key, "PRO", maxTerminals: 5));
+            await uow.SaveChangesAsync();
+        }
 
-        var storeResponse = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
-            new CreateStoreRequest(
-                storeCode ?? "ST" + Guid.NewGuid().ToString("N")[..6].ToUpperInvariant(),
-                "Test Store", null, null, null, null));
+        var storeCode = "S" + Guid.NewGuid().ToString("N")[..7].ToUpperInvariant();
+        var terminalUid = Guid.NewGuid();
+        var response = await client.PostAsJsonAsync("/api/licensing/activate",
+            new ActivateStoreLicenseRequest(
+                ProductKey: key,
+                TerminalUid: terminalUid,
+                StoreName: "Test Store",
+                StoreCode: storeCode,
+                CounterNumber: "01",
+                CounterName: "Main Counter",
+                MachineName: "TEST-PC",
+                AppVersion: "1.0.0"));
 
-        storeResponse.StatusCode.Should().Be(HttpStatusCode.Created);
-        var store = await storeResponse.Content.ReadFromJsonAsync<ApiResponse<StoreDto>>(JsonOpts);
-        var storeId = store!.Data!.Id;
-
-        var codeResponse = await provisioning.PostAsJsonAsync(
-            $"/api/provisioning/stores/{storeId}/enrollment-codes",
-            new IssueEnrollmentCodeRequest(60, "integration test"));
-
-        codeResponse.StatusCode.Should().Be(HttpStatusCode.Created);
-        var code = await codeResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollmentCodeDto>>(JsonOpts);
-
-        return (storeId, code!.Data!.Code);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var activated = (await response.Content.ReadFromJsonAsync<ApiResponse<ActivateStoreLicenseResponse>>(JsonOpts))!.Data!;
+        return (activated.StoreId, activated.TerminalId, activated.TerminalUid, activated.ApiKey);
     }
 
     [Fact]
@@ -86,114 +92,28 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
     }
 
     [Fact]
-    public async Task Enroll_WithValidCode_ReturnsApiKeyAndStore()
+    public async Task DuplicateStoreCode_IsRejected()
     {
-        var (storeId, code) = await ProvisionStoreWithCodeAsync();
-        var terminalUid = Guid.NewGuid();
-
-        var response = await CreateClient().PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, terminalUid, "01", "Main Counter", "TEST-PC", "1.0.0"));
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        var body = await response.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts);
-        body!.Success.Should().BeTrue();
-        body.Data!.StoreId.Should().Be(storeId);
-        body.Data.TerminalUid.Should().Be(terminalUid);
-        body.Data.ApiKey.Should().StartWith("miq_");
-        body.Data.ApiKey.Length.Should().BeGreaterThan(40);
-    }
-
-    [Fact]
-    public async Task Enroll_WithUnknownCode_IsRejectedWithoutRevealingAnything()
-    {
-        var response = await CreateClient().PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest("ZZZZ-ZZZZ", Guid.NewGuid(), "01", "Main", null, null));
-
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-
-        var body = await response.Content.ReadFromJsonAsync<ApiResponse<object>>(JsonOpts);
-        body!.Errors.Should().ContainSingle().Which.Should().Be("That enrollment code is not valid.");
-    }
-
-    [Fact]
-    public async Task Enroll_ReusingACode_IsRejected()
-    {
-        var (_, code) = await ProvisionStoreWithCodeAsync();
-        var client = CreateClient();
-
-        var first = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, Guid.NewGuid(), "01", "Main", null, null));
-        first.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        // Single use: the same code must not enroll a second till.
-        var second = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, Guid.NewGuid(), "02", "Second", null, null));
-
-        second.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-    }
-
-    [Fact]
-    public async Task Enroll_SameTerminalIntoAnotherStore_IsRejected()
-    {
-        var (_, firstCode) = await ProvisionStoreWithCodeAsync();
-        var terminalUid = Guid.NewGuid();
-
-        var client = CreateClient();
-        var enrolled = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(firstCode, terminalUid, "01", "Main", null, null));
-        enrolled.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        // The till's unsent events belong to the first store, so moving it is refused.
-        var (_, otherCode) = await ProvisionStoreWithCodeAsync();
-        var moved = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(otherCode, terminalUid, "01", "Main", null, null));
-
-        moved.StatusCode.Should().Be(HttpStatusCode.Conflict);
-    }
-
-    [Fact]
-    public async Task Enroll_SameTerminalAndStoreAgain_RotatesTheKey()
-    {
-        var (_, firstCode) = await ProvisionStoreWithCodeAsync("REINSTALL");
-        var terminalUid = Guid.NewGuid();
-        var client = CreateClient();
-
-        var first = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(firstCode, terminalUid, "01", "Main", null, null));
-        var firstBody = await first.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts);
-
-        // A reinstall of the same machine: fresh code, same terminal identity.
         var provisioning = CreateProvisioningClient();
-        var codeResponse = await provisioning.PostAsJsonAsync(
-            $"/api/provisioning/stores/{firstBody!.Data!.StoreId}/enrollment-codes",
-            new IssueEnrollmentCodeRequest(60, "reinstall"));
-        var secondCode = (await codeResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollmentCodeDto>>(JsonOpts))!.Data!.Code;
+        var code = "DUPE" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
 
-        var second = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(secondCode, terminalUid, "01", "Main", null, null));
+        var first = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
+            new CreateStoreRequest(code, "First", null, null, null, null));
+        first.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        second.StatusCode.Should().Be(HttpStatusCode.OK);
-        var secondBody = await second.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts);
-
-        // Same terminal, new secret — history is preserved, the credential is not.
-        secondBody!.Data!.TerminalId.Should().Be(firstBody.Data.TerminalId);
-        secondBody.Data.ApiKey.Should().NotBe(firstBody.Data.ApiKey);
+        var second = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
+            new CreateStoreRequest(code, "Second", null, null, null, null));
+        second.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
 
     [Fact]
     public async Task Token_WithCorrectKey_IssuesBearerToken()
     {
-        var (storeId, code) = await ProvisionStoreWithCodeAsync();
-        var terminalUid = Guid.NewGuid();
+        var (storeId, _, terminalUid, apiKey) = await ActivateTerminalAsync();
         var client = CreateClient();
 
-        var enroll = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, terminalUid, "01", "Main", null, null));
-        var enrolled = (await enroll.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
-
         var tokenResponse = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(terminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(terminalUid, apiKey));
 
         tokenResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         var token = (await tokenResponse.Content.ReadFromJsonAsync<ApiResponse<TerminalTokenResponse>>(JsonOpts))!.Data!;
@@ -207,12 +127,8 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
     [Fact]
     public async Task Token_WithWrongKey_IsRejected()
     {
-        var (_, code) = await ProvisionStoreWithCodeAsync();
-        var terminalUid = Guid.NewGuid();
+        var (_, _, terminalUid, _) = await ActivateTerminalAsync();
         var client = CreateClient();
-
-        await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, terminalUid, "01", "Main", null, null));
 
         var response = await client.PostAsJsonAsync("/api/terminals/token",
             new TerminalTokenRequest(terminalUid, "miq_definitely-not-the-real-key"));
@@ -243,16 +159,11 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
     [Fact]
     public async Task Me_WithTerminalToken_ReturnsItsOwnRecord()
     {
-        var (storeId, code) = await ProvisionStoreWithCodeAsync();
-        var terminalUid = Guid.NewGuid();
+        var (storeId, _, terminalUid, apiKey) = await ActivateTerminalAsync();
         var client = CreateClient();
 
-        var enroll = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, terminalUid, "07", "Express Lane", "TILL-07", "1.2.3"));
-        var enrolled = (await enroll.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
-
         var tokenResponse = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(terminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(terminalUid, apiKey));
         var token = (await tokenResponse.Content.ReadFromJsonAsync<ApiResponse<TerminalTokenResponse>>(JsonOpts))!.Data!;
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
@@ -263,27 +174,22 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
 
         body!.Data!.TerminalUid.Should().Be(terminalUid);
         body.Data.StoreId.Should().Be(storeId);
-        body.Data.CounterNumber.Should().Be("07");
-        body.Data.CounterName.Should().Be("Express Lane");
+        body.Data.CounterNumber.Should().Be("01");
+        body.Data.CounterName.Should().Be("Main Counter");
     }
 
     [Fact]
     public async Task RevokedTerminal_CannotGetANewToken()
     {
-        var (_, code) = await ProvisionStoreWithCodeAsync();
-        var terminalUid = Guid.NewGuid();
+        var (_, terminalId, terminalUid, apiKey) = await ActivateTerminalAsync();
         var client = CreateClient();
 
-        var enroll = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, terminalUid, "01", "Main", null, null));
-        var enrolled = (await enroll.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
-
         var revoke = await CreateProvisioningClient()
-            .PostAsync($"/api/provisioning/terminals/{enrolled.TerminalId}/revoke", null);
+            .PostAsync($"/api/provisioning/terminals/{terminalId}/revoke", null);
         revoke.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var tokenResponse = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(terminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(terminalUid, apiKey));
 
         tokenResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
@@ -291,111 +197,21 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
     [Fact]
     public async Task SuspendedTerminal_CannotGetANewToken_ButCanBeReactivated()
     {
-        var (_, code) = await ProvisionStoreWithCodeAsync();
-        var terminalUid = Guid.NewGuid();
+        var (_, terminalId, terminalUid, apiKey) = await ActivateTerminalAsync();
         var client = CreateClient();
         var provisioning = CreateProvisioningClient();
 
-        var enroll = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code, terminalUid, "01", "Main", null, null));
-        var enrolled = (await enroll.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
-
-        await provisioning.PostAsync($"/api/provisioning/terminals/{enrolled.TerminalId}/suspend", null);
+        await provisioning.PostAsync($"/api/provisioning/terminals/{terminalId}/suspend", null);
 
         var whileSuspended = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(terminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(terminalUid, apiKey));
         whileSuspended.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         // Suspension keeps the credential, so reactivating restores access without re-enrolling.
-        await provisioning.PostAsync($"/api/provisioning/terminals/{enrolled.TerminalId}/reactivate", null);
+        await provisioning.PostAsync($"/api/provisioning/terminals/{terminalId}/reactivate", null);
 
         var afterReactivation = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(terminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(terminalUid, apiKey));
         afterReactivation.StatusCode.Should().Be(HttpStatusCode.OK);
-    }
-
-    [Fact]
-    public async Task DuplicateStoreCode_IsRejected()
-    {
-        var provisioning = CreateProvisioningClient();
-        var code = "DUPE" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
-
-        var first = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
-            new CreateStoreRequest(code, "First", null, null, null, null));
-        first.StatusCode.Should().Be(HttpStatusCode.Created);
-
-        var second = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
-            new CreateStoreRequest(code, "Second", null, null, null, null));
-        second.StatusCode.Should().Be(HttpStatusCode.Conflict);
-    }
-
-    [Fact]
-    public async Task Enroll_StoreWithAssignedProductKey_EnforcesTerminalLimit()
-    {
-        var client = CreateClient();
-        var provisioning = CreateProvisioningClient();
-
-        // 1. Create a store with provisioning key
-        var storeCode = "LIM" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
-        var storeResponse = await provisioning.PostAsJsonAsync("/api/provisioning/stores",
-            new CreateStoreRequest(storeCode, "Limited Store", null, null, null, null));
-        storeResponse.StatusCode.Should().Be(HttpStatusCode.Created);
-        var store = (await storeResponse.Content.ReadFromJsonAsync<ApiResponse<StoreDto>>(JsonOpts))!.Data!;
-
-        // 2. Assign a product key to this store with MaxTerminals = 2
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var keys = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IProductKeyRepository>();
-            var uow = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IUnitOfWork>();
-            var testKey = POS.Domain.Entities.ProductKey.Create($"MIQ-STD-{Guid.NewGuid():N}"[..24], "STD", maxTerminals: 2);
-            testKey.AssignToStore(store.Id);
-            await keys.AddAsync(testKey);
-            await uow.SaveChangesAsync();
-        }
-
-        // 3. Issue enrollment codes
-        async Task<string> IssueCodeAsync()
-        {
-            var codeResp = await provisioning.PostAsJsonAsync(
-                $"/api/provisioning/stores/{store.Id}/enrollment-codes",
-                new IssueEnrollmentCodeRequest(60, "limit test"));
-            return (await codeResp.Content.ReadFromJsonAsync<ApiResponse<EnrollmentCodeDto>>(JsonOpts))!.Data!.Code;
-        }
-
-        var code1 = await IssueCodeAsync();
-        var code2 = await IssueCodeAsync();
-        var code3 = await IssueCodeAsync();
-
-        // 4. Enroll terminal 1 - succeeds
-        var t1Uid = Guid.NewGuid();
-        var enroll1 = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code1, t1Uid, "01", "Counter 1", null, null));
-        enroll1.StatusCode.Should().Be(HttpStatusCode.OK);
-        var t1Data = (await enroll1.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
-
-        // 5. Enroll terminal 2 - reaches max limit (2) - succeeds
-        var t2Uid = Guid.NewGuid();
-        var enroll2 = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code2, t2Uid, "02", "Counter 2", null, null));
-        enroll2.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        // 6. Enroll terminal 3 - exceeds max limit (2) - rejected!
-        var t3Uid = Guid.NewGuid();
-        var enroll3 = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code3, t3Uid, "03", "Counter 3", null, null));
-        enroll3.StatusCode.Should().Be(HttpStatusCode.Conflict);
-
-        var err = await enroll3.Content.ReadFromJsonAsync<ApiResponse<object>>(JsonOpts);
-        err!.Errors.Should().Contain(e => e.Contains("License limit reached"));
-
-        // 7. Revoke terminal 1 - frees up 1 slot
-        var revoke = await provisioning.PostAsync($"/api/provisioning/terminals/{t1Data.TerminalId}/revoke", null);
-        revoke.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        // 8. Enroll terminal 3 with a new code - now succeeds!
-        var code4 = await IssueCodeAsync();
-        var enroll3Retry = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code4, t3Uid, "03", "Counter 3", null, null));
-        enroll3Retry.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }

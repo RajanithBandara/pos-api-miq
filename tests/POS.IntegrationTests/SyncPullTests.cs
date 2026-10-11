@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using POS.Application.Common.Models;
 using POS.Application.Provisioning;
 using POS.Application.Sync;
@@ -37,30 +38,53 @@ public class SyncPullTests : IClassFixture<CustomWebApplicationFactory>
         return client;
     }
 
+    private readonly Dictionary<Guid, string> _storeKeys = new();
+
     private async Task<Guid> CreateStoreAsync()
     {
-        var response = await Provisioning().PostAsJsonAsync("/api/provisioning/stores",
-            new CreateStoreRequest("P" + Guid.NewGuid().ToString("N")[..7].ToUpperInvariant(),
-                "Pull Test Store", null, null, null, null));
+        var productKey = "MIQ-STD-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
+        var storeCode = "P" + Guid.NewGuid().ToString("N")[..7].ToUpperInvariant();
+        var client = _factory.CreateClient();
 
-        return (await response.Content.ReadFromJsonAsync<ApiResponse<StoreDto>>(JsonOpts))!.Data!.Id;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var keys = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IProductKeyRepository>();
+            var uow = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IUnitOfWork>();
+            await keys.AddAsync(POS.Domain.Entities.ProductKey.Create(productKey, "PRO", maxTerminals: 10));
+            await uow.SaveChangesAsync();
+        }
+
+        var activateResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new POS.Application.Licensing.ActivateStoreLicenseRequest(
+                ProductKey: productKey,
+                TerminalUid: Guid.NewGuid(),
+                StoreName: "Pull Test Store",
+                StoreCode: storeCode,
+                CounterNumber: "00",
+                CounterName: "Setup"));
+        var activated = (await activateResponse.Content.ReadFromJsonAsync<ApiResponse<POS.Application.Licensing.ActivateStoreLicenseResponse>>(JsonOpts))!.Data!;
+
+        _storeKeys[activated.StoreId] = productKey;
+        return activated.StoreId;
     }
 
     /// <summary>Enrolls another till into an existing store, so peers share a feed.</summary>
     private async Task<HttpClient> EnrollIntoAsync(Guid storeId)
     {
-        var codeResponse = await Provisioning().PostAsJsonAsync(
-            $"/api/provisioning/stores/{storeId}/enrollment-codes",
-            new IssueEnrollmentCodeRequest(60, null));
-        var code = (await codeResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollmentCodeDto>>(JsonOpts))!.Data!;
-
+        var productKey = _storeKeys[storeId];
         var client = _factory.CreateClient();
-        var enrollResponse = await client.PostAsJsonAsync("/api/terminals/enroll",
-            new EnrollTerminalRequest(code.Code, Guid.NewGuid(), "01", "Counter", "TEST", "1.0.0"));
-        var enrolled = (await enrollResponse.Content.ReadFromJsonAsync<ApiResponse<EnrollTerminalResponse>>(JsonOpts))!.Data!;
+        var terminalUid = Guid.NewGuid();
+
+        var activateResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new POS.Application.Licensing.ActivateStoreLicenseRequest(
+                ProductKey: productKey,
+                TerminalUid: terminalUid,
+                CounterNumber: "01",
+                CounterName: "Counter"));
+        var activated = (await activateResponse.Content.ReadFromJsonAsync<ApiResponse<POS.Application.Licensing.ActivateStoreLicenseResponse>>(JsonOpts))!.Data!;
 
         var tokenResponse = await client.PostAsJsonAsync("/api/terminals/token",
-            new TerminalTokenRequest(enrolled.TerminalUid, enrolled.ApiKey));
+            new TerminalTokenRequest(activated.TerminalUid, activated.ApiKey));
         var token = (await tokenResponse.Content.ReadFromJsonAsync<ApiResponse<TerminalTokenResponse>>(JsonOpts))!.Data!;
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);

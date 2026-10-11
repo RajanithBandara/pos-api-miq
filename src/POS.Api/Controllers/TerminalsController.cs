@@ -27,27 +27,6 @@ public class TerminalsController : ControllerBase
     }
 
     /// <summary>
-    /// Binds a till to a store using a single-use enrollment code, and returns the device
-    /// secret. The secret is shown exactly once and cannot be retrieved again.
-    /// </summary>
-    [HttpPost("enroll")]
-    [AllowAnonymous]
-    [ProducesResponseType(typeof(ApiResponse<EnrollTerminalResponse>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> Enroll([FromBody] EnrollTerminalRequest request, CancellationToken cancellationToken)
-    {
-        var result = await _enrollment.EnrollAsync(request, cancellationToken);
-
-        if (result.IsFailure)
-            return StatusCode(MapEnrollmentFailure(result.ErrorCode),
-                ApiResponse<object>.Fail(result.Error!, "Enrollment refused"));
-
-        return Ok(ApiResponse<EnrollTerminalResponse>.Ok(result.Value!,
-            "Terminal enrolled. Store the apiKey securely — it is not retrievable again."));
-    }
-
-    /// <summary>
     /// Exchanges the durable device secret for a short-lived bearer token. Every sync call
     /// carries the token, never the secret.
     /// </summary>
@@ -88,15 +67,4 @@ public class TerminalsController : ControllerBase
 
         return Ok(ApiResponse<TerminalDto>.Ok(result.Value!));
     }
-
-    private static int MapEnrollmentFailure(string? errorCode) => errorCode switch
-    {
-        TerminalEnrollmentService.CodeTerminalConflict => StatusCodes.Status409Conflict,
-        TerminalEnrollmentService.CodeStoreInactive => StatusCodes.Status409Conflict,
-        TerminalEnrollmentService.CodeTerminalRevoked => StatusCodes.Status403Forbidden,
-        TerminalEnrollmentService.CodeTerminalLimitReached => StatusCodes.Status409Conflict,
-        TerminalEnrollmentService.CodeKeyExpired => StatusCodes.Status403Forbidden,
-        TerminalEnrollmentService.CodeKeySuspended => StatusCodes.Status403Forbidden,
-        _ => StatusCodes.Status400BadRequest
-    };
 }

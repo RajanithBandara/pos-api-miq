@@ -19,17 +19,3 @@ public sealed record StoreDto(
     bool IsActive,
     int TerminalCount,
     DateTime CreatedAtUtc);
-
-public sealed record IssueEnrollmentCodeRequest(int? ValidForMinutes, string? Note);
-
-public sealed record EnrollmentCodeDto(
-    Guid Id,
-    string Code,
-    Guid StoreId,
-    string StoreName,
-    DateTime CreatedAtUtc,
-    DateTime ExpiresAtUtc,
-    DateTime? UsedAtUtc,
-    Guid? UsedByTerminalId,
-    bool IsRevoked,
-    string? Note);

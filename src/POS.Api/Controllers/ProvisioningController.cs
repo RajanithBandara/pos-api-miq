@@ -51,40 +51,6 @@ public class ProvisioningController : ControllerBase
         return Ok(ApiResponse<IReadOnlyList<StoreDto>>.Ok(stores));
     }
 
-    /// <summary>
-    /// Mints a single-use code an installer types into a till. Short-lived by default so a
-    /// code left on screen stops working on its own.
-    /// </summary>
-    [HttpPost("stores/{storeId:guid}/enrollment-codes")]
-    [ProducesResponseType(typeof(ApiResponse<EnrollmentCodeDto>), StatusCodes.Status201Created)]
-    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> IssueEnrollmentCode(
-        Guid storeId,
-        [FromBody] IssueEnrollmentCodeRequest request,
-        CancellationToken cancellationToken)
-    {
-        var result = await _provisioning.IssueEnrollmentCodeAsync(storeId, request, cancellationToken);
-
-        if (result.IsFailure)
-            return StatusCode(Map(result.ErrorCode), ApiResponse<object>.Fail(result.Error!, "Code not issued"));
-
-        return StatusCode(StatusCodes.Status201Created,
-            ApiResponse<EnrollmentCodeDto>.Ok(result.Value!, "Enrollment code issued."));
-    }
-
-    [HttpGet("stores/{storeId:guid}/enrollment-codes")]
-    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<EnrollmentCodeDto>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetEnrollmentCodes(Guid storeId, CancellationToken cancellationToken)
-    {
-        var result = await _provisioning.GetEnrollmentCodesAsync(storeId, cancellationToken);
-
-        if (result.IsFailure)
-            return StatusCode(Map(result.ErrorCode), ApiResponse<object>.Fail(result.Error!, "Store not found"));
-
-        return Ok(ApiResponse<IReadOnlyList<EnrollmentCodeDto>>.Ok(result.Value!));
-    }
-
     [HttpGet("terminals")]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<TerminalDto>>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetTerminals([FromQuery] Guid? storeId = null, CancellationToken cancellationToken = default)
