@@ -214,4 +214,38 @@ public class TerminalEnrollmentTests : IClassFixture<CustomWebApplicationFactory
             new TerminalTokenRequest(terminalUid, apiKey));
         afterReactivation.StatusCode.Should().Be(HttpStatusCode.OK);
     }
+
+    [Fact]
+    public async Task Peers_ReturnsAllStoreTerminals()
+    {
+        var key = "MIQ-STD-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
+        var (storeId, _, t1Uid, t1Key) = await ActivateTerminalAsync(key);
+
+        var client = CreateClient();
+        // Activate a second terminal on the same key & store
+        var t2Uid = Guid.NewGuid();
+        var secondActivate = await client.PostAsJsonAsync("/api/licensing/activate",
+            new ActivateStoreLicenseRequest(
+                ProductKey: key,
+                TerminalUid: t2Uid,
+                CounterNumber: "02",
+                CounterName: "Second Register"));
+        secondActivate.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Get bearer token for terminal 1
+        var tokenResponse = await client.PostAsJsonAsync("/api/terminals/token",
+            new TerminalTokenRequest(t1Uid, t1Key));
+        var token = (await tokenResponse.Content.ReadFromJsonAsync<ApiResponse<TerminalTokenResponse>>(JsonOpts))!.Data!;
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+        var peersResponse = await client.GetAsync("/api/terminals/peers");
+
+        peersResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await peersResponse.Content.ReadFromJsonAsync<ApiResponse<System.Collections.Generic.IReadOnlyList<TerminalDto>>>(JsonOpts);
+
+        body!.Data.Should().NotBeNull();
+        body.Data!.Should().HaveCountGreaterThanOrEqualTo(2);
+        body.Data.Should().Contain(t => t.TerminalUid == t1Uid && t.CounterNumber == "01");
+        body.Data.Should().Contain(t => t.TerminalUid == t2Uid && t.CounterNumber == "02");
+    }
 }

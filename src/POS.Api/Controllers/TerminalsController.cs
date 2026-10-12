@@ -67,4 +67,22 @@ public class TerminalsController : ControllerBase
 
         return Ok(ApiResponse<TerminalDto>.Ok(result.Value!));
     }
+
+    /// <summary>
+    /// Returns all registered counters/terminals belonging to the calling terminal's store.
+    /// Allows terminals to discover store peers and their activity status.
+    /// </summary>
+    [HttpGet("peers")]
+    [Authorize(Policy = AuthorizationPolicies.Terminal)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<TerminalDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Peers(CancellationToken cancellationToken)
+    {
+        var storeId = User.GetStoreId();
+        if (storeId is null)
+            return Unauthorized(ApiResponse<object>.Fail("This token does not identify a store.", "Unauthorized"));
+
+        var result = await _enrollment.GetByStoreAsync(storeId.Value, cancellationToken);
+        return Ok(ApiResponse<IReadOnlyList<TerminalDto>>.Ok(result.Value!));
+    }
 }

@@ -11,6 +11,7 @@ public interface ITerminalEnrollmentService
 {
     Task<Result<TerminalTokenResponse>> IssueTokenAsync(TerminalTokenRequest request, CancellationToken cancellationToken = default);
     Task<Result<TerminalDto>> GetByIdAsync(Guid terminalId, CancellationToken cancellationToken = default);
+    Task<Result<IReadOnlyList<TerminalDto>>> GetByStoreAsync(Guid storeId, CancellationToken cancellationToken = default);
 }
 
 public sealed class TerminalEnrollmentService(
@@ -90,5 +91,24 @@ public sealed class TerminalEnrollmentService(
             terminal.Status,
             terminal.EnrolledAtUtc,
             terminal.LastSeenAtUtc));
+    }
+
+    public async Task<Result<IReadOnlyList<TerminalDto>>> GetByStoreAsync(Guid storeId, CancellationToken cancellationToken = default)
+    {
+        var list = await terminals.GetByStoreAsync(storeId, cancellationToken);
+        var dtos = list.Select(terminal => new TerminalDto(
+            terminal.Id,
+            terminal.TerminalUid,
+            terminal.StoreId,
+            terminal.Store?.Name ?? string.Empty,
+            terminal.CounterNumber,
+            terminal.CounterName,
+            terminal.MachineName,
+            terminal.AppVersion,
+            terminal.Status,
+            terminal.EnrolledAtUtc,
+            terminal.LastSeenAtUtc)).ToList();
+
+        return Result<IReadOnlyList<TerminalDto>>.Success(dtos);
     }
 }
