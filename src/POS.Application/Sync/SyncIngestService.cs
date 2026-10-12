@@ -43,7 +43,8 @@ public sealed class SyncIngestService(
     private static readonly HashSet<string> KnownAggregateTypes = new(StringComparer.Ordinal)
     {
         "Order", "CashSession", "ReceiptRefund", "InventoryMovement",
-        "ProductBatch", "Customer", "RemovedProductAudit"
+        "ProductBatch", "Customer", "RemovedProductAudit",
+        "Product", "Category"
     };
 
     public async Task<Result<SyncPushResponse>> PushAsync(
