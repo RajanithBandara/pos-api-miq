@@ -64,4 +64,25 @@ public class LicensingController : ControllerBase
             result.Value!,
             "Store and terminal successfully activated with product license."));
     }
+
+    /// <summary>
+    /// Checks the product license key and activation status for a store by its StoreId.
+    /// Returns whether the store license is active or disabled/suspended, along with key and plan details.
+    /// </summary>
+    [HttpGet("check-activation/{storeId:guid}")]
+    [HttpGet("store/{storeId:guid}/status")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ApiResponse<StoreActivationStatusResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> CheckStoreActivation(
+        Guid storeId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _licensing.CheckStoreActivationAsync(storeId, cancellationToken);
+
+        if (result.IsFailure)
+            return NotFound(ApiResponse<object>.Fail(result.Error!, "Store license verification failed"));
+
+        return Ok(ApiResponse<StoreActivationStatusResponse>.Ok(result.Value!, result.Value!.Message));
+    }
 }

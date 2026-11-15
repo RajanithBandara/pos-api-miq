@@ -40,3 +40,16 @@ public sealed record ActivateStoreLicenseResponse(
     string PlanTier,
     int MaxTerminals,
     DateTime EnrolledAtUtc);
+
+public sealed record StoreActivationStatusResponse(
+    bool IsActive,
+    string Status,
+    string ProductKey,
+    string PlanTier,
+    int MaxTerminals,
+    int EnrolledTerminalsCount,
+    Guid StoreId,
+    string StoreName,
+    string StoreCode,
+    DateTime? ExpiresAtUtc,
+    string Message);

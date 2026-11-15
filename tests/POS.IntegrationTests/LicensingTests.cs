@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using POS.Application.Common.Models;
 using POS.Application.Licensing;
 using POS.IntegrationTests.Infrastructure;
@@ -163,5 +164,51 @@ public class LicensingTests : IClassFixture<CustomWebApplicationFactory>
         ignoreDetailsEnvelope!.Data!.StoreId.Should().Be(storeId);
         ignoreDetailsEnvelope.Data.StoreCode.Should().Be(storeCode);
         ignoreDetailsEnvelope.Data.StoreName.Should().Be("Automated Test Store");
+    }
+
+    [Fact]
+    public async Task CheckStoreActivation_ReturnsActiveStatus_WhenStoreHasActiveKey()
+    {
+        var client = CreateClient();
+
+        // 1. Seed a dedicated test product key
+        var dedicatedKey = "MIQ-PRO-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var keys = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IProductKeyRepository>();
+            var uow = scope.ServiceProvider.GetRequiredService<POS.Domain.Interfaces.IUnitOfWork>();
+            await keys.AddAsync(POS.Domain.Entities.ProductKey.Create(dedicatedKey, "PRO", maxTerminals: 3));
+            await uow.SaveChangesAsync();
+        }
+
+        // 2. Activate store with this key
+        var terminalUid = Guid.NewGuid();
+        var storeCode = "ST" + Guid.NewGuid().ToString("N")[..6].ToUpperInvariant();
+        var activateResponse = await client.PostAsJsonAsync("/api/licensing/activate",
+            new ActivateStoreLicenseRequest(
+                ProductKey: dedicatedKey,
+                TerminalUid: terminalUid,
+                StoreName: "Store Check Test",
+                StoreCode: storeCode,
+                CounterNumber: "01",
+                CounterName: "Main Till"));
+
+        activateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var activateEnvelope = await activateResponse.Content.ReadFromJsonAsync<ApiResponse<ActivateStoreLicenseResponse>>(JsonOpts);
+        var storeId = activateEnvelope!.Data!.StoreId;
+
+        // 3. Query check-activation by StoreId
+        var checkResponse = await client.GetAsync($"/api/licensing/check-activation/{storeId}");
+        checkResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var checkEnvelope = await checkResponse.Content.ReadFromJsonAsync<ApiResponse<StoreActivationStatusResponse>>(JsonOpts);
+        checkEnvelope.Should().NotBeNull();
+        checkEnvelope!.Success.Should().BeTrue();
+        checkEnvelope.Data!.IsActive.Should().BeTrue();
+        checkEnvelope.Data.Status.Should().Be("Active");
+        checkEnvelope.Data.ProductKey.Should().Be(dedicatedKey);
+        checkEnvelope.Data.PlanTier.Should().Be("PRO");
+        checkEnvelope.Data.MaxTerminals.Should().Be(3);
+        checkEnvelope.Data.StoreId.Should().Be(storeId);
     }
 }

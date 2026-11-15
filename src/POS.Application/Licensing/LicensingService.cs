@@ -20,6 +20,10 @@ public interface ILicensingService
     Task<Result<ActivateStoreLicenseResponse>> ActivateAsync(
         ActivateStoreLicenseRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<Result<StoreActivationStatusResponse>> CheckStoreActivationAsync(
+        Guid storeId,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class LicensingService(
@@ -235,5 +239,59 @@ public sealed class LicensingService(
                 MaxTerminals: key.MaxTerminals,
                 EnrolledAtUtc: terminal.EnrolledAtUtc));
         }, cancellationToken);
+    }
+
+    public async Task<Result<StoreActivationStatusResponse>> CheckStoreActivationAsync(
+        Guid storeId,
+        CancellationToken cancellationToken = default)
+    {
+        if (storeId == Guid.Empty)
+            return Result<StoreActivationStatusResponse>.Failure("A valid store identifier is required.", "missing_store_id");
+
+        var store = await stores.FindByIdAsync(storeId, cancellationToken);
+        if (store is null)
+            return Result<StoreActivationStatusResponse>.Failure($"Store '{storeId}' was not found.", "store_not_found");
+
+        var key = await keys.FindByStoreIdAsync(storeId, cancellationToken);
+        if (key is null)
+        {
+            logger.LogWarning("No product key found for store '{StoreName}' ({StoreId}).", store.Name, storeId);
+            return Result<StoreActivationStatusResponse>.Failure("No commercial product license key is assigned to this store.", "no_key_assigned");
+        }
+
+        var storeTerminals = await terminals.GetByStoreAsync(storeId, cancellationToken);
+        var activeTerminalsCount = storeTerminals.Count(t => t.Status != TerminalStatus.Revoked);
+
+        bool isExpired = key.Status == ProductKeyStatus.Expired || (key.ExpiresAtUtc.HasValue && key.ExpiresAtUtc.Value <= DateTime.UtcNow);
+        bool isSuspended = key.Status == ProductKeyStatus.Suspended;
+        bool isActive = store.IsActive && !isExpired && !isSuspended && key.Status == ProductKeyStatus.Active;
+
+        string statusText = isSuspended ? "Suspended"
+            : isExpired ? "Expired"
+            : !store.IsActive ? "StoreInactive"
+            : key.Status.ToString();
+
+        string message = isActive
+            ? "Store license is active and valid."
+            : isSuspended
+                ? "This store's product license key has been suspended. Please contact support."
+                : isExpired
+                    ? "This store's product license key has expired."
+                    : !store.IsActive
+                        ? "This store has been deactivated."
+                        : $"Product key status is {key.Status}.";
+
+        return Result<StoreActivationStatusResponse>.Success(new StoreActivationStatusResponse(
+            IsActive: isActive,
+            Status: statusText,
+            ProductKey: key.KeyCode,
+            PlanTier: key.PlanTier,
+            MaxTerminals: key.MaxTerminals,
+            EnrolledTerminalsCount: activeTerminalsCount,
+            StoreId: store.Id,
+            StoreName: store.Name,
+            StoreCode: store.Code,
+            ExpiresAtUtc: key.ExpiresAtUtc,
+            Message: message));
     }
 }
