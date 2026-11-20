@@ -54,8 +54,12 @@ builder.Services.AddApiAuthorization();
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<AppDbContext>("database", tags: new[] { "ready", "db" });
 
-// Swagger / OpenAPI
-builder.Services.AddSwaggerDocumentation();
+// Swagger / OpenAPI (Disabled by default)
+var enableSwagger = builder.Configuration.GetValue<bool>("Swagger:Enabled", false);
+if (enableSwagger)
+{
+    builder.Services.AddSwaggerDocumentation();
+}
 
 // Configurable CORS. The browser origins allowed to call this API — the Angular dashboard, and
 // nothing else. Origins are always an explicit list, never a wildcard: the policy allows
@@ -116,12 +120,15 @@ app.UseMiddleware<RequestLoggingMiddleware>();
 
 app.UseSerilogRequestLogging();
 
-app.UseSwagger();
-app.UseSwaggerUI(c =>
+if (enableSwagger)
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "POS API v1");
-    c.RoutePrefix = "swagger";
-});
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "POS API v1");
+        c.RoutePrefix = "swagger";
+    });
+}
 
 app.UseRouting();
 
@@ -135,7 +142,7 @@ app.MapGet("/", () => Results.Ok(new
     service = "POS API",
     status = "Online",
     version = "1.0.0",
-    docs = "/swagger",
+    docs = enableSwagger ? "/swagger" : null,
     health = "/api/health"
 }));
 
